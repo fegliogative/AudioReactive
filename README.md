@@ -3,7 +3,6 @@
 Transform your videos, images, and live webcam feeds into dynamic, music-reactive experiences! This powerful Python application analyzes audio frequencies and automatically applies synchronized visual effects in **real-time**, allowing you to see and adjust effects instantly as you tweak the controls.
 
 ![Python](https://img.shields.io/badge/python-3.8+-blue.svg)
-![License](https://img.shields.io/badge/license-MIT-green.svg)
 ![Platform](https://img.shields.io/badge/platform-macOS-lightgrey.svg)
 
 ## ✨ Key Features
