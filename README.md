@@ -200,7 +200,7 @@ Record yourself performing with real-time audio-reactive effects and synchronize
 
 ## 📝 License
 
-This project is provided as-is for personal and commercial use.
+Cc-BY-NC 4.0
 
 ## 🤝 Contributing
 
