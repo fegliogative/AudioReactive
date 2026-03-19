@@ -8,7 +8,8 @@
 4. [Effect Controls](#effect-controls)
 5. [Real-Time Preview](#real-time-preview)
 6. [Processing Videos](#processing-videos)
-7. [Tips & Best Practices](#tips--best-practices)
+7. [Building for macOS](#building-for-macos)
+8. [Tips & Best Practices](#tips--best-practices)
 
 ---
 
@@ -322,6 +323,42 @@ During processing, you'll see:
 - **Image Mode**: Video created from image with audio merged
 - **Folder Mode**: Video with crossfaded images and audio merged
 - **Webcam Mode**: Recording with audio merged (if audio was loaded)
+
+---
+
+## Building for macOS
+
+You can package SoundReactive into a standalone macOS `.app` bundle and a `.dmg` installer. This allows you to run the application like any other Mac app (from your Applications folder or Dock) without needing to open Terminal or activate a Python environment.
+
+### Prerequisites
+
+You need two tools installed on your Mac:
+1. **PyInstaller** (to build the `.app` bundle)
+2. **create-dmg** (to build the drag-and-drop installer)
+
+Install them by running:
+```bash
+pip install pyinstaller
+brew install create-dmg
+```
+
+### Running the Build Script
+
+A fully automated build script is included in the repository. To use it:
+
+1. Open Terminal and navigate to the SoundReactive folder.
+2. Make the script executable (you only need to do this once):
+   ```bash
+   chmod +x build_mac.sh
+   ```
+3. Run the script:
+   ```bash
+   ./build_mac.sh
+   ```
+
+The script will clean up any old builds, run PyInstaller to bundle the Python code and assets (including the logo and `.icns` icon), and finally use `create-dmg` to generate a professional installer.
+
+When it finishes, you will find a **`SoundReactive.dmg`** file in your folder. Double-click it, drag the SoundReactive icon into the Applications folder, and you're done!
 
 ---
 

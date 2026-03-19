@@ -129,6 +129,24 @@ Record yourself with live audio-reactive effects:
 7. Effects sync perfectly to the audio in real-time
 8. Click **"Stop Recording"** - audio is automatically merged with video
 
+## 📦 Building for macOS (DMG)
+
+You can package SoundReactive into a standalone macOS `.app` and `.dmg` installer so it can be run without Terminal or Python installed.
+
+1. **Install Build Tools**:
+   ```bash
+   pip install pyinstaller
+   brew install create-dmg
+   ```
+
+2. **Run the Build Script**:
+   ```bash
+   chmod +x build_mac.sh
+   ./build_mac.sh
+   ```
+
+This will generate a `SoundReactive.dmg` file in your project folder. You can double-click it and drag the app into your Applications folder.
+
 ## 📋 Requirements
 
 - **Python 3.8+** (Python 3.10+ recommended)
