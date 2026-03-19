@@ -12,7 +12,7 @@ from PyQt5.QtWidgets import (
     QFrame, QComboBox, QProgressBar, QMessageBox
 )
 from PyQt5.QtCore import Qt, QThread, pyqtSignal, QTimer, QObject, QUrl
-from PyQt5.QtGui import QPixmap, QImage, QFont
+from PyQt5.QtGui import QPixmap, QImage, QFont, QIcon
 from PyQt5.QtMultimedia import QMediaPlayer, QMediaContent
 import cv2
 import numpy as np
@@ -45,6 +45,17 @@ class SoundReactiveGUI(QMainWindow):
         self.setWindowTitle("SoundReactive - Audio-Reactive Video Generator")
         self.setGeometry(100, 100, 1400, 900)
         self.setMinimumSize(1200, 800)
+
+        # Set application icon (used in Dock, window title bar, and Alt-Tab on macOS)
+        _icon_candidates = [
+            os.path.join(os.path.dirname(os.path.abspath(__file__)), "SoundReactive.icns"),
+            os.path.join(os.path.dirname(os.path.abspath(__file__)), "SoundReactive_Logo_Transparent_BG.png"),
+        ]
+        for _icon_path in _icon_candidates:
+            if os.path.exists(_icon_path):
+                self.setWindowIcon(QIcon(_icon_path))
+                QApplication.setWindowIcon(QIcon(_icon_path))
+                break
         
         # Application state
         self.video_path = None
