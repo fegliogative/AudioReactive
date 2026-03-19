@@ -58,7 +58,7 @@ pip install librosa numpy scipy opencv-python soundfile imageio imageio-ffmpeg P
 
 ```bash
 source venv/bin/activate
-python3 gui_preview_pyqt5.py
+python3 app.py
 ```
 
 ### 3. Basic Workflow
@@ -171,7 +171,7 @@ pip install PyQt5
 
 ```
 audio-reactive-video/
-├── gui_preview_pyqt5.py          # Main GUI application
+├── app.py          # Main GUI application
 ├── audio_analysis.py              # Audio frequency analysis
 ├── video_processor.py             # Video frame processing
 ├── image_to_video.py             # Image-to-video conversion
