@@ -2872,9 +2872,49 @@ class SoundReactiveGUI(QMainWindow):
             raise
 
 
+def _set_macos_app_name(name: str) -> None:
+    """
+    On macOS, the Dock and menu-bar show the *process* name, which defaults
+    to 'Python' when running a script directly.  Two complementary fixes:
+
+    1. Rename the process via AppKit's NSBundle (sets CFBundleName so the
+       menu bar and Dock label both update immediately).
+    2. Rename the low-level process name via ctypes / libc so that tools
+       like Activity Monitor also show the correct name.
+    """
+    import platform
+    if platform.system() != "Darwin":
+        return
+    try:
+        # Method 1: AppKit / Foundation (most reliable for Dock + menu bar)
+        from Foundation import NSBundle  # type: ignore
+        info = NSBundle.mainBundle().infoDictionary()
+        info["CFBundleName"] = name
+        info["CFBundleDisplayName"] = name
+    except Exception:
+        pass
+    try:
+        # Method 2: ctypes rename via libproc / libc (Activity Monitor)
+        import ctypes
+        import ctypes.util
+        libc_name = ctypes.util.find_library("c")
+        if libc_name:
+            libc = ctypes.CDLL(libc_name)
+            # setprogname is available on macOS
+            libc.setprogname.restype = None
+            libc.setprogname.argtypes = [ctypes.c_char_p]
+            libc.setprogname(name.encode())
+    except Exception:
+        pass
+
+
 def main():
     """Main entry point"""
+    _set_macos_app_name("SoundReactive")
     app = QApplication(sys.argv)
+    app.setApplicationName("SoundReactive")
+    app.setApplicationDisplayName("SoundReactive")
+    app.setOrganizationName("SoundReactive")
     
     print("Creating PyQt5 GUI...")
     window = SoundReactiveGUI()
