@@ -227,6 +227,10 @@ class SoundReactiveGUI(QMainWindow):
             ]
         }
         
+        # Natural motion persistent drift state (for preview smoothing)
+        self._nm_ad_smooth_x = 0.0
+        self._nm_ad_smooth_y = 0.0
+
         # Initialize frequency weights (using regular floats, not tk.DoubleVar)
         self.init_frequency_weights()
         
@@ -386,6 +390,7 @@ class SoundReactiveGUI(QMainWindow):
         self.create_advanced_controls(controls_layout)
         self.create_layer_blending_controls(controls_layout)
         self.create_effect_controls(controls_layout)
+        self.create_natural_motion_controls(controls_layout)
         self.create_action_buttons(controls_layout)
         
         # Add stretch at end
@@ -793,6 +798,133 @@ class SoundReactiveGUI(QMainWindow):
         parent_layout.addWidget(group)
         print("    Effect controls created")
     
+    def create_natural_motion_controls(self, parent_layout):
+        """Create Natural Movement controls group"""
+        print("  Creating natural motion controls...")
+        group = QGroupBox("Natural Movement")
+        group.setStyleSheet("""
+            QGroupBox {
+                font-weight: bold;
+                border: 2px solid #ccc;
+                border-radius: 5px;
+                margin-top: 10px;
+                padding-top: 10px;
+            }
+            QGroupBox::title {
+                subcontrol-origin: margin;
+                left: 10px;
+                padding: 0 5px;
+            }
+        """)
+        layout = QVBoxLayout()
+        layout.setSpacing(12)
+
+        desc = QLabel("Add organic, continuous movement independent of audio beats.")
+        desc.setWordWrap(True)
+        desc.setStyleSheet("color: gray; font-size: 9pt;")
+        layout.addWidget(desc)
+
+        # ── Helper to build a labelled slider row ──────────────────────────
+        def _slider_row(label_text, attr_name, min_val, max_val, default_val,
+                        scale=1.0, suffix="", decimals=2):
+            row = QHBoxLayout()
+            row.addWidget(QLabel(label_text))
+            slider = QSlider(Qt.Horizontal)
+            slider.setMinimum(min_val)
+            slider.setMaximum(max_val)
+            slider.setValue(default_val)
+            value_label = QLabel(f"{default_val * scale:.{decimals}f}{suffix}")
+            value_label.setFixedWidth(55)
+
+            def _on_change(v, lbl=value_label, sc=scale, sf=suffix, dc=decimals):
+                lbl.setText(f"{v * sc:.{dc}f}{sf}")
+                self.update_preview()
+
+            slider.valueChanged.connect(_on_change)
+            row.addWidget(slider)
+            row.addWidget(value_label)
+            setattr(self, attr_name, slider)
+            return row
+
+        # ── 1. Ken Burns ───────────────────────────────────────────────────
+        self.ken_burns_check = QCheckBox("Ken Burns (slow pan & zoom)")
+        self.ken_burns_check.toggled.connect(self.update_preview)
+        layout.addWidget(self.ken_burns_check)
+
+        layout.addLayout(_slider_row(
+            "  Zoom Start:", "kb_zoom_start_slider", 100, 130, 100, 0.01, "x"))
+        layout.addLayout(_slider_row(
+            "  Zoom End:", "kb_zoom_end_slider", 100, 130, 108, 0.01, "x"))
+        layout.addLayout(_slider_row(
+            "  Pan X:", "kb_pan_x_slider", -100, 100, 0, 0.01, ""))
+        layout.addLayout(_slider_row(
+            "  Pan Y:", "kb_pan_y_slider", -100, 100, 0, 0.01, ""))
+
+        # ── 2. Noise Drift ─────────────────────────────────────────────────
+        self.noise_drift_check = QCheckBox("Organic Noise Drift")
+        self.noise_drift_check.toggled.connect(self.update_preview)
+        layout.addWidget(self.noise_drift_check)
+
+        layout.addLayout(_slider_row(
+            "  Amplitude (px):", "noise_amp_slider", 0, 40, 8, 1.0, "px", 0))
+        layout.addLayout(_slider_row(
+            "  Speed:", "noise_speed_slider", 1, 50, 10, 0.1, "x"))
+
+        # ── 3. Breathing Pulse ─────────────────────────────────────────────
+        self.breathing_check = QCheckBox("Breathing Pulse")
+        self.breathing_check.toggled.connect(self.update_preview)
+        layout.addWidget(self.breathing_check)
+
+        layout.addLayout(_slider_row(
+            "  Amplitude:", "breath_amp_slider", 0, 10, 2, 0.01, ""))
+        layout.addLayout(_slider_row(
+            "  Period (s):", "breath_period_slider", 10, 120, 40, 0.1, "s"))
+
+        # ── 4. Audio-Modulated Drift ───────────────────────────────────────
+        self.audio_drift_check = QCheckBox("Audio-Modulated Drift")
+        self.audio_drift_check.toggled.connect(self.update_preview)
+        layout.addWidget(self.audio_drift_check)
+
+        layout.addLayout(_slider_row(
+            "  Scale (px):", "audio_drift_scale_slider", 0, 30, 6, 1.0, "px", 0))
+
+        # ── 5. Rotation Sway ───────────────────────────────────────────────
+        self.sway_check = QCheckBox("Rotation Sway")
+        self.sway_check.toggled.connect(self.update_preview)
+        layout.addWidget(self.sway_check)
+
+        layout.addLayout(_slider_row(
+            "  Amplitude (°):", "sway_amp_slider", 0, 30, 5, 0.1, "°"))
+        layout.addLayout(_slider_row(
+            "  Period (s):", "sway_period_slider", 10, 200, 80, 0.1, "s"))
+
+        group.setLayout(layout)
+        parent_layout.addWidget(group)
+        print("    Natural motion controls created")
+
+    def get_natural_motion_params(self) -> dict:
+        """Read all Natural Movement slider values and return a params dict."""
+        return dict(
+            ken_burns_enabled=self.ken_burns_check.isChecked(),
+            ken_burns_zoom_start=self.kb_zoom_start_slider.value() * 0.01,
+            ken_burns_zoom_end=self.kb_zoom_end_slider.value() * 0.01,
+            ken_burns_pan_x=self.kb_pan_x_slider.value() * 0.01,
+            ken_burns_pan_y=self.kb_pan_y_slider.value() * 0.01,
+            noise_drift_enabled=self.noise_drift_check.isChecked(),
+            noise_drift_amplitude=float(self.noise_amp_slider.value()),
+            noise_drift_speed=self.noise_speed_slider.value() * 0.1,
+            noise_drift_seed=42,
+            breathing_enabled=self.breathing_check.isChecked(),
+            breathing_amplitude=self.breath_amp_slider.value() * 0.01,
+            breathing_period=self.breath_period_slider.value() * 0.1,
+            audio_drift_enabled=self.audio_drift_check.isChecked(),
+            audio_drift_scale=float(self.audio_drift_scale_slider.value()),
+            audio_drift_alpha=0.05,
+            sway_enabled=self.sway_check.isChecked(),
+            sway_amplitude=self.sway_amp_slider.value() * 0.1,
+            sway_period=self.sway_period_slider.value() * 0.1,
+        )
+
     def create_action_buttons(self, parent_layout):
         """Create action buttons"""
         print("  Creating action buttons...")
@@ -1312,6 +1444,22 @@ class SoundReactiveGUI(QMainWindow):
                 scan_lines_intensity = np.clip(scan_lines_intensity, 0.0, 1.0)
                 scan_lines_intensity = self.apply_temporal_smoothing('scan_lines', scan_lines_intensity)
         
+        # ── Natural motion for this preview frame ──────────────────────────────
+        nm_params = self.get_natural_motion_params()
+        total_frames = max(self.total_frames, 1)
+        nm = VideoProcessor.compute_natural_motion(
+            frame_idx=self.current_frame_idx,
+            total_frames=total_frames,
+            fps=self.fps,
+            audio_drift_bass=bass,
+            audio_drift_treble=treble,
+            audio_drift_smoothed_x=self._nm_ad_smooth_x,
+            audio_drift_smoothed_y=self._nm_ad_smooth_y,
+            **nm_params,
+        )
+        self._nm_ad_smooth_x = nm['audio_drift_smoothed_x']
+        self._nm_ad_smooth_y = nm['audio_drift_smoothed_y']
+
         return {
             'zoom': zoom, 'rotation': rotation, 'hue_shift': hue_shift,
             'saturation': saturation, 'brightness': brightness,
@@ -1323,7 +1471,12 @@ class SoundReactiveGUI(QMainWindow):
             'posterization_intensity': posterization_intensity,
             'edge_detection_intensity': edge_detection_intensity,
             'data_corruption_intensity': data_corruption_intensity,
-            'scan_lines_intensity': scan_lines_intensity
+            'scan_lines_intensity': scan_lines_intensity,
+            # Natural motion offsets
+            'natural_zoom_offset': nm['zoom_offset'],
+            'natural_pan_x': nm['pan_x'],
+            'natural_pan_y': nm['pan_y'],
+            'natural_rotation_offset': nm['rotation_offset'],
         }
     
     def apply_effects_to_frame(self, frame):
@@ -1349,8 +1502,8 @@ class SoundReactiveGUI(QMainWindow):
             saturation=params['saturation'],
             brightness=params['brightness'],
             blur_intensity=params['blur_intensity'],
-            glitch_intensity=0.0,  # Not in UI yet
-            artifacts_intensity=0.0,  # Not in UI yet
+            glitch_intensity=0.0,
+            artifacts_intensity=0.0,
             pixel_sort_intensity=params['pixel_sort_intensity'],
             kaleidoscope_intensity=params['kaleidoscope_intensity'],
             wave_distortion_intensity=params['wave_distortion_intensity'],
@@ -1361,7 +1514,11 @@ class SoundReactiveGUI(QMainWindow):
             scan_lines_intensity=params['scan_lines_intensity'],
             effect_mode="direct",
             blend_mode=blend_mode,
-            layer_opacity=layer_opacity
+            layer_opacity=layer_opacity,
+            natural_zoom_offset=params.get('natural_zoom_offset', 0.0),
+            natural_pan_x=params.get('natural_pan_x', 0.0),
+            natural_pan_y=params.get('natural_pan_y', 0.0),
+            natural_rotation_offset=params.get('natural_rotation_offset', 0.0),
         )
     
     def update_preview(self):
@@ -2041,6 +2198,11 @@ class SoundReactiveGUI(QMainWindow):
             snare_hit_times = np.array([])
         
         # Process each frame
+        # Natural motion persistent state
+        _vp_nm_ad_smooth_x = 0.0
+        _vp_nm_ad_smooth_y = 0.0
+        _vp_nm_params = self.get_natural_motion_params()
+
         frame_idx = 0
         while True:
             ret, frame = cap.read()
@@ -2171,6 +2333,20 @@ class SoundReactiveGUI(QMainWindow):
                     scan_lines_intensity = np.clip(scan_lines_intensity, 0.0, 1.0)
                     scan_lines_intensity = self.apply_temporal_smoothing('scan_lines', scan_lines_intensity)
             
+            # Natural motion for this frame
+            _vp_nm = VideoProcessor.compute_natural_motion(
+                frame_idx=frame_idx,
+                total_frames=total_frames,
+                fps=fps,
+                audio_drift_bass=bass_val,
+                audio_drift_treble=treble_val,
+                audio_drift_smoothed_x=_vp_nm_ad_smooth_x,
+                audio_drift_smoothed_y=_vp_nm_ad_smooth_y,
+                **_vp_nm_params,
+            )
+            _vp_nm_ad_smooth_x = _vp_nm['audio_drift_smoothed_x']
+            _vp_nm_ad_smooth_y = _vp_nm['audio_drift_smoothed_y']
+
             # Get blend mode and opacity
             blend_mode = self.blend_mode_combo.currentText().lower()
             layer_opacity = self.opacity_slider.value() / 100.0
@@ -2187,8 +2363,8 @@ class SoundReactiveGUI(QMainWindow):
                 saturation=saturation,
                 brightness=brightness,
                 blur_intensity=blur_intensity,
-                glitch_intensity=0.0,  # Not in UI
-                artifacts_intensity=0.0,  # Not in UI
+                glitch_intensity=0.0,
+                artifacts_intensity=0.0,
                 pixel_sort_intensity=pixel_sort_intensity,
                 kaleidoscope_intensity=kaleidoscope_intensity,
                 wave_distortion_intensity=wave_distortion_intensity,
@@ -2199,7 +2375,11 @@ class SoundReactiveGUI(QMainWindow):
                 scan_lines_intensity=scan_lines_intensity,
                 effect_mode="direct",
                 blend_mode=blend_mode,
-                layer_opacity=layer_opacity
+                layer_opacity=layer_opacity,
+                natural_zoom_offset=_vp_nm['zoom_offset'],
+                natural_pan_x=_vp_nm['pan_x'],
+                natural_pan_y=_vp_nm['pan_y'],
+                natural_rotation_offset=_vp_nm['rotation_offset'],
             )
             
             # Write frame

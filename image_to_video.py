@@ -111,7 +111,26 @@ class ImageToVideoProcessor:
         snare_window: float = 0.15,
         # Reactivity
         intensity_sensitivity: float = 0.7,
-        smoothness: float = 0.8
+        smoothness: float = 0.8,
+        # ── Natural movement ──────────────────────────────────────────────────
+        ken_burns_enabled: bool = False,
+        ken_burns_zoom_start: float = 1.0,
+        ken_burns_zoom_end: float = 1.08,
+        ken_burns_pan_x: float = 0.0,
+        ken_burns_pan_y: float = 0.0,
+        noise_drift_enabled: bool = False,
+        noise_drift_amplitude: float = 8.0,
+        noise_drift_speed: float = 1.0,
+        noise_drift_seed: int = 42,
+        breathing_enabled: bool = False,
+        breathing_amplitude: float = 0.02,
+        breathing_period: float = 4.0,
+        audio_drift_enabled: bool = False,
+        audio_drift_scale: float = 6.0,
+        audio_drift_alpha: float = 0.05,
+        sway_enabled: bool = False,
+        sway_amplitude: float = 0.5,
+        sway_period: float = 8.0,
     ):
         """
         Process image into video with audio-reactive effects
@@ -148,6 +167,24 @@ class ImageToVideoProcessor:
             snare_window: Time window around snares
             intensity_sensitivity: Intensity sensitivity (0.0-1.0)
             smoothness: Smoothness factor (0.0-1.0)
+            ken_burns_enabled: Enable Ken Burns slow pan/zoom drift
+            ken_burns_zoom_start: Starting zoom for Ken Burns (e.g. 1.0)
+            ken_burns_zoom_end: Ending zoom for Ken Burns (e.g. 1.08)
+            ken_burns_pan_x: Horizontal pan direction (-1..1)
+            ken_burns_pan_y: Vertical pan direction (-1..1)
+            noise_drift_enabled: Enable organic noise-based drift
+            noise_drift_amplitude: Drift amplitude in pixels
+            noise_drift_speed: Drift speed multiplier
+            noise_drift_seed: Seed for reproducible drift path
+            breathing_enabled: Enable breathing pulse zoom
+            breathing_amplitude: Breathing zoom amplitude (e.g. 0.02)
+            breathing_period: Breathing cycle period in seconds
+            audio_drift_enabled: Enable audio-modulated drift
+            audio_drift_scale: Max drift in pixels driven by audio
+            audio_drift_alpha: Smoothing factor for audio drift (0..1)
+            sway_enabled: Enable subtle rotation sway
+            sway_amplitude: Sway amplitude in degrees
+            sway_period: Sway cycle period in seconds
         """
         print(f"Processing image to video with audio-reactive effects...")
         print(f"  Zoom factor: {zoom_factor}x")
@@ -211,6 +248,10 @@ class ImageToVideoProcessor:
         # Setup video writer
         fourcc = cv2.VideoWriter_fourcc(*'mp4v')
         out = cv2.VideoWriter(output_path, fourcc, self.fps, (self.width, self.height))
+
+        # Natural motion persistent state (audio drift smoothing)
+        _ad_smooth_x = 0.0
+        _ad_smooth_y = 0.0
         
         # Process each frame
         for frame_idx in range(self.total_frames):
@@ -223,6 +264,37 @@ class ImageToVideoProcessor:
             mid_val = mid_interp[frame_idx]
             treble_val = treble_interp[frame_idx]
             high_treble_val = high_treble_interp[frame_idx]
+
+            # ── Natural motion ───────────────────────────────────────────────
+            nm = VideoProcessor.compute_natural_motion(
+                frame_idx=frame_idx,
+                total_frames=self.total_frames,
+                fps=self.fps,
+                ken_burns_enabled=ken_burns_enabled,
+                ken_burns_zoom_start=ken_burns_zoom_start,
+                ken_burns_zoom_end=ken_burns_zoom_end,
+                ken_burns_pan_x=ken_burns_pan_x,
+                ken_burns_pan_y=ken_burns_pan_y,
+                noise_drift_enabled=noise_drift_enabled,
+                noise_drift_amplitude=noise_drift_amplitude,
+                noise_drift_speed=noise_drift_speed,
+                noise_drift_seed=noise_drift_seed,
+                breathing_enabled=breathing_enabled,
+                breathing_amplitude=breathing_amplitude,
+                breathing_period=breathing_period,
+                audio_drift_enabled=audio_drift_enabled,
+                audio_drift_bass=bass_val,
+                audio_drift_treble=treble_val,
+                audio_drift_scale=audio_drift_scale,
+                audio_drift_smoothed_x=_ad_smooth_x,
+                audio_drift_smoothed_y=_ad_smooth_y,
+                audio_drift_alpha=audio_drift_alpha,
+                sway_enabled=sway_enabled,
+                sway_amplitude=sway_amplitude,
+                sway_period=sway_period,
+            )
+            _ad_smooth_x = nm['audio_drift_smoothed_x']
+            _ad_smooth_y = nm['audio_drift_smoothed_y']
             
             # Start with base image
             frame = self.base_image.copy()
@@ -357,36 +429,33 @@ class ImageToVideoProcessor:
                 scan_lines_intensity = base_intensity * (0.5 + intensity_sensitivity * 0.5)
                 scan_lines_intensity = np.clip(scan_lines_intensity, 0.0, 1.0)
             
-            # Apply effects to frame
-            if (zoom != 1.0 or rotation != 0.0 or hue_shift != 0.0 or saturation != 1.0 or 
-                brightness != 1.0 or blur_intensity > 0.0 or glitch_intensity > 0.0 or 
-                artifacts_intensity > 0.0 or pixel_sort_intensity > 0.0 or 
-                kaleidoscope_intensity > 0.0 or wave_distortion_intensity > 0.0 or
-                vhs_intensity > 0.0 or posterization_intensity > 0.0 or 
-                edge_detection_intensity > 0.0 or data_corruption_intensity > 0.0 or
-                scan_lines_intensity > 0.0):
-                frame = self.effect_processor.apply_effects(
-                    frame,
-                    zoom=zoom,
-                    rotation=rotation,
-                    hue_shift=hue_shift,
-                    saturation=saturation,
-                    brightness=brightness,
-                    blur_intensity=blur_intensity,
-                    glitch_intensity=glitch_intensity,
-                    artifacts_intensity=artifacts_intensity,
-                    pixel_sort_intensity=pixel_sort_intensity,
-                    kaleidoscope_intensity=kaleidoscope_intensity,
-                    wave_distortion_intensity=wave_distortion_intensity,
-                    vhs_intensity=vhs_intensity,
-                    posterization_intensity=posterization_intensity,
-                    edge_detection_intensity=edge_detection_intensity,
-                    data_corruption_intensity=data_corruption_intensity,
-                    scan_lines_intensity=scan_lines_intensity,
-                    effect_mode="direct",  # Default for CLI usage
-                    blend_mode="normal",
-                    layer_opacity=1.0
-                )
+            # Apply effects to frame (always call so natural motion is applied even at silence)
+            frame = self.effect_processor.apply_effects(
+                frame,
+                zoom=zoom,
+                rotation=rotation,
+                hue_shift=hue_shift,
+                saturation=saturation,
+                brightness=brightness,
+                blur_intensity=blur_intensity,
+                glitch_intensity=glitch_intensity,
+                artifacts_intensity=artifacts_intensity,
+                pixel_sort_intensity=pixel_sort_intensity,
+                kaleidoscope_intensity=kaleidoscope_intensity,
+                wave_distortion_intensity=wave_distortion_intensity,
+                vhs_intensity=vhs_intensity,
+                posterization_intensity=posterization_intensity,
+                edge_detection_intensity=edge_detection_intensity,
+                data_corruption_intensity=data_corruption_intensity,
+                scan_lines_intensity=scan_lines_intensity,
+                effect_mode="direct",
+                blend_mode="normal",
+                layer_opacity=1.0,
+                natural_zoom_offset=nm['zoom_offset'],
+                natural_pan_x=nm['pan_x'],
+                natural_pan_y=nm['pan_y'],
+                natural_rotation_offset=nm['rotation_offset'],
+            )
             
             # Write frame
             out.write(frame)

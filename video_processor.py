@@ -101,6 +101,116 @@ class VideoProcessor:
             return 2 * t * t
         return 1 - pow(-2 * t + 2, 2) / 2
     
+    # ==================== Natural Motion Engine ====================
+
+    @staticmethod
+    def compute_natural_motion(
+        frame_idx: int,
+        total_frames: int,
+        fps: float,
+        # Ken Burns
+        ken_burns_enabled: bool = False,
+        ken_burns_zoom_start: float = 1.0,
+        ken_burns_zoom_end: float = 1.08,
+        ken_burns_pan_x: float = 0.0,   # normalised -1..1 (fraction of frame width)
+        ken_burns_pan_y: float = 0.0,   # normalised -1..1 (fraction of frame height)
+        # Noise drift
+        noise_drift_enabled: bool = False,
+        noise_drift_amplitude: float = 8.0,   # pixels
+        noise_drift_speed: float = 1.0,
+        noise_drift_seed: int = 42,
+        # Breathing pulse
+        breathing_enabled: bool = False,
+        breathing_amplitude: float = 0.02,
+        breathing_period: float = 4.0,   # seconds
+        # Audio-modulated drift
+        audio_drift_enabled: bool = False,
+        audio_drift_bass: float = 0.0,   # 0..1 current bass energy
+        audio_drift_treble: float = 0.0, # 0..1 current treble energy
+        audio_drift_scale: float = 6.0,  # pixels
+        audio_drift_smoothed_x: float = 0.0,
+        audio_drift_smoothed_y: float = 0.0,
+        audio_drift_alpha: float = 0.05,
+        # Rotation sway
+        sway_enabled: bool = False,
+        sway_amplitude: float = 0.5,     # degrees
+        sway_period: float = 8.0,        # seconds
+    ) -> dict:
+        """
+        Compute all natural (non-audio-reactive) motion offsets for a single frame.
+
+        Returns a dict with keys:
+            zoom_offset  – additional zoom multiplier (add to 1.0 before combining with audio zoom)
+            pan_x        – pixel offset in X
+            pan_y        – pixel offset in Y
+            rotation_offset – degrees to add to audio-reactive rotation
+            audio_drift_smoothed_x – updated smoothed drift X (pass back next frame)
+            audio_drift_smoothed_y – updated smoothed drift Y (pass back next frame)
+        """
+        t = frame_idx / max(fps, 1e-6)          # time in seconds
+        t_norm = frame_idx / max(total_frames - 1, 1)  # 0 → 1
+
+        zoom_offset = 0.0
+        pan_x = 0.0
+        pan_y = 0.0
+        rotation_offset = 0.0
+
+        # ── 1. Ken Burns ────────────────────────────────────────────────────
+        if ken_burns_enabled:
+            kb_zoom = ken_burns_zoom_start + (ken_burns_zoom_end - ken_burns_zoom_start) * t_norm
+            zoom_offset += kb_zoom - 1.0
+            # Pan is expressed as a fraction of frame size; actual pixel shift is
+            # applied inside zoom_frame_with_pan which receives the final pan values.
+            pan_x += ken_burns_pan_x * t_norm
+            pan_y += ken_burns_pan_y * t_norm
+
+        # ── 2. Organic noise drift ──────────────────────────────────────────
+        if noise_drift_enabled:
+            s = noise_drift_seed
+            phase = t * noise_drift_speed * 0.02
+            nx = (
+                0.5 * np.sin(phase * 0.7 + s)
+                + 0.3 * np.sin(phase * 1.3 + s * 2.1)
+                + 0.2 * np.sin(phase * 2.9 + s * 0.7)
+            )
+            ny = (
+                0.5 * np.sin(phase * 0.6 + s * 1.5)
+                + 0.3 * np.sin(phase * 1.1 + s * 0.3)
+                + 0.2 * np.sin(phase * 3.1 + s * 1.9)
+            )
+            pan_x += nx * noise_drift_amplitude
+            pan_y += ny * noise_drift_amplitude
+
+        # ── 3. Breathing pulse ──────────────────────────────────────────────
+        if breathing_enabled:
+            breath_phase = 2.0 * np.pi * t / max(breathing_period, 0.1)
+            zoom_offset += breathing_amplitude * np.sin(breath_phase)
+
+        # ── 4. Audio-modulated drift ────────────────────────────────────────
+        new_smooth_x = audio_drift_smoothed_x
+        new_smooth_y = audio_drift_smoothed_y
+        if audio_drift_enabled:
+            target_x = (audio_drift_bass - 0.5) * audio_drift_scale
+            target_y = (audio_drift_treble - 0.5) * audio_drift_scale * 0.5
+            new_smooth_x = audio_drift_alpha * target_x + (1.0 - audio_drift_alpha) * audio_drift_smoothed_x
+            new_smooth_y = audio_drift_alpha * target_y + (1.0 - audio_drift_alpha) * audio_drift_smoothed_y
+            pan_x += new_smooth_x
+            pan_y += new_smooth_y
+
+        # ── 5. Rotation sway ────────────────────────────────────────────────
+        if sway_enabled:
+            sway_phase = 2.0 * np.pi * t / max(sway_period, 0.1)
+            rotation_offset += sway_amplitude * np.sin(sway_phase)
+
+        return {
+            'zoom_offset': zoom_offset,
+            'pan_x': pan_x,
+            'pan_y': pan_y,
+            'rotation_offset': rotation_offset,
+            'audio_drift_smoothed_x': new_smooth_x,
+            'audio_drift_smoothed_y': new_smooth_y,
+        }
+
     # ==================== Basic Effects ====================
     
     def zoom_frame(self, frame: np.ndarray, zoom_factor: float) -> np.ndarray:
@@ -132,6 +242,49 @@ class VideoProcessor:
         # Resize back to original dimensions
         zoomed = cv2.resize(cropped, (w, h), interpolation=cv2.INTER_LINEAR)
         
+        return zoomed
+
+    def zoom_frame_with_pan(
+        self,
+        frame: np.ndarray,
+        zoom_factor: float,
+        pan_x: float = 0.0,
+        pan_y: float = 0.0
+    ) -> np.ndarray:
+        """
+        Apply zoom with an optional pan offset (Ken Burns / drift).
+
+        Args:
+            frame:       Input frame.
+            zoom_factor: Zoom factor (>= 1.0).
+            pan_x:       Horizontal pan in normalised units (-1..1) where 1 == half the
+                         cropped width.  Positive values pan right.
+            pan_y:       Vertical pan in normalised units (-1..1).  Positive values pan down.
+
+        Returns:
+            Zoomed-and-panned frame at the original resolution.
+        """
+        if zoom_factor <= 1.0 and pan_x == 0.0 and pan_y == 0.0:
+            return frame
+
+        zoom_factor = max(zoom_factor, 1.0)
+        h, w = frame.shape[:2]
+
+        crop_h = int(h / zoom_factor)
+        crop_w = int(w / zoom_factor)
+
+        # Centre crop, then shift by pan offset
+        max_shift_x = (w - crop_w) // 2
+        max_shift_y = (h - crop_h) // 2
+
+        shift_x = int(pan_x * max_shift_x)
+        shift_y = int(pan_y * max_shift_y)
+
+        start_x = np.clip((w - crop_w) // 2 + shift_x, 0, w - crop_w)
+        start_y = np.clip((h - crop_h) // 2 + shift_y, 0, h - crop_h)
+
+        cropped = frame[start_y:start_y + crop_h, start_x:start_x + crop_w]
+        zoomed = cv2.resize(cropped, (w, h), interpolation=cv2.INTER_LINEAR)
         return zoomed
     
     def rotate_frame(self, frame: np.ndarray, angle_degrees: float) -> np.ndarray:
@@ -944,7 +1097,12 @@ class VideoProcessor:
         # Layer blending parameters
         effect_mode: str = "direct",
         blend_mode: str = "normal",
-        layer_opacity: float = 1.0
+        layer_opacity: float = 1.0,
+        # Natural motion offsets (from compute_natural_motion)
+        natural_zoom_offset: float = 0.0,
+        natural_pan_x: float = 0.0,
+        natural_pan_y: float = 0.0,
+        natural_rotation_offset: float = 0.0,
     ) -> np.ndarray:
         """
         Apply all effects to a frame in optimal order
@@ -986,16 +1144,20 @@ class VideoProcessor:
         # 6. Retro effects (VHS, scan lines)
         # 7. Blur (last, to smooth everything)
         
+        # Combine audio-reactive transforms with natural motion offsets
+        combined_zoom = max(1.0, zoom + natural_zoom_offset)
+        combined_rotation = rotation + natural_rotation_offset
+
         # Apply geometric transforms to both original (for blending) and effect frame
         if effect_mode == "layer" and original_frame is not None:
             # Transform original frame for proper alignment
-            original_transformed = self.zoom_frame(original_frame, zoom)
-            original_transformed = self.rotate_frame(original_transformed, rotation)
+            original_transformed = self.zoom_frame_with_pan(original_frame, combined_zoom, natural_pan_x, natural_pan_y)
+            original_transformed = self.rotate_frame(original_transformed, combined_rotation)
         else:
             original_transformed = None
         
-        frame = self.zoom_frame(frame, zoom)
-        frame = self.rotate_frame(frame, rotation)
+        frame = self.zoom_frame_with_pan(frame, combined_zoom, natural_pan_x, natural_pan_y)
+        frame = self.rotate_frame(frame, combined_rotation)
         frame = self.apply_color_grade(frame, hue_shift, saturation, brightness)
         
         # Artistic effects (applied early to preserve detail)
