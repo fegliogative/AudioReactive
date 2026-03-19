@@ -30,11 +30,176 @@ import random
 import time
 
 
+def resource_path(relative_name: str) -> str:
+    """
+    Return the absolute path to a bundled resource file.
+
+    When running as a PyInstaller .app bundle, sys._MEIPASS points to the
+    temporary folder where all --add-data files are extracted.  When running
+    directly from source, we look next to the script file itself.
+    """
+    if hasattr(sys, '_MEIPASS'):
+        return os.path.join(sys._MEIPASS, relative_name)
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), relative_name)
+
+
 class ProcessingSignals(QObject):
     """Signals for thread-safe GUI updates"""
     progress_update = pyqtSignal(int, str)  # progress_percent, status_message
     frame_update = pyqtSignal(object)  # frame (numpy array)
     analysis_progress = pyqtSignal(str)  # analysis status message
+
+
+class SoundReactiveSplash(QWidget):
+    """
+    Animated splash screen shown while the main window loads.
+
+    Design: dark background, centred logo that fades in and gently pulses,
+    app name + tagline below, and a thin animated progress bar at the bottom.
+    The splash closes itself after `duration_ms` milliseconds.
+    """
+
+    def __init__(self, duration_ms: int = 2800) -> None:
+        super().__init__()
+        self._duration_ms = duration_ms
+        self._opacity = 0.0
+        self._pulse_phase = 0.0
+        self._progress = 0
+
+        # Frameless, always-on-top, translucent window
+        self.setWindowFlags(
+            Qt.SplashScreen | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint
+        )
+        self.setAttribute(Qt.WA_TranslucentBackground)
+
+        # Fixed size – centred on screen later
+        self.setFixedSize(520, 340)
+
+        # Logo pixmap
+        self._logo_pixmap: QPixmap | None = None
+        logo_path = resource_path("SoundReactive_Logo_Transparent_BG.png")
+        if os.path.exists(logo_path):
+            px = QPixmap(logo_path)
+            if not px.isNull():
+                self._logo_pixmap = px.scaled(
+                    200, 200, Qt.KeepAspectRatio, Qt.SmoothTransformation
+                )
+
+        # Fade-in + pulse timer (60 fps)
+        self._anim_timer = QTimer(self)
+        self._anim_timer.timeout.connect(self._tick)
+        self._anim_timer.start(16)  # ~60 fps
+
+        # Close timer
+        self._close_timer = QTimer(self)
+        self._close_timer.setSingleShot(True)
+        self._close_timer.timeout.connect(self._begin_fade_out)
+        self._close_timer.start(duration_ms)
+
+        self._fading_out = False
+
+    # ── Animation ────────────────────────────────────────────────────────
+
+    def _tick(self) -> None:
+        if not self._fading_out:
+            # Fade in over ~600 ms (0.016 s * 37 ticks ≈ 0.6 s)
+            if self._opacity < 1.0:
+                self._opacity = min(1.0, self._opacity + 0.027)
+            # Gentle pulse: ±3 % scale
+            self._pulse_phase = (self._pulse_phase + 0.04) % (2 * 3.14159)
+            # Progress bar advances linearly
+            self._progress = min(
+                100,
+                int(self._progress + 100 / (self._duration_ms / 16))
+            )
+        else:
+            self._opacity = max(0.0, self._opacity - 0.045)
+            if self._opacity <= 0.0:
+                self._anim_timer.stop()
+                self.close()
+        self.update()
+
+    def _begin_fade_out(self) -> None:
+        self._fading_out = True
+
+    # ── Painting ─────────────────────────────────────────────────────────
+
+    def paintEvent(self, event) -> None:  # noqa: N802
+        import math
+        from PyQt5.QtGui import QPainter, QColor, QLinearGradient, QPen, QBrush
+        from PyQt5.QtCore import QRectF, QPointF
+
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        painter.setOpacity(self._opacity)
+
+        w, h = self.width(), self.height()
+
+        # ── Background ──────────────────────────────────────────────────
+        bg_grad = QLinearGradient(0, 0, 0, h)
+        bg_grad.setColorAt(0.0, QColor(15, 15, 25))
+        bg_grad.setColorAt(1.0, QColor(25, 10, 40))
+        painter.setBrush(QBrush(bg_grad))
+        painter.setPen(Qt.NoPen)
+        painter.drawRoundedRect(0, 0, w, h, 18, 18)
+
+        # ── Subtle glow ring behind logo ─────────────────────────────────
+        pulse = 1.0 + 0.03 * math.sin(self._pulse_phase)
+        glow_r = int(110 * pulse)
+        cx, cy = w // 2, h // 2 - 30
+        for radius, alpha in [(glow_r + 30, 18), (glow_r + 15, 35), (glow_r, 55)]:
+            painter.setBrush(QBrush(QColor(140, 60, 220, alpha)))
+            painter.drawEllipse(QPointF(cx, cy), radius, radius)
+
+        # ── Logo ────────────────────────────────────────────────────────
+        if self._logo_pixmap:
+            lw = int(self._logo_pixmap.width() * pulse)
+            lh = int(self._logo_pixmap.height() * pulse)
+            scaled = self._logo_pixmap.scaled(
+                lw, lh, Qt.KeepAspectRatio, Qt.SmoothTransformation
+            )
+            lx = cx - scaled.width() // 2
+            ly = cy - scaled.height() // 2
+            painter.drawPixmap(lx, ly, scaled)
+
+        # ── App name ────────────────────────────────────────────────────
+        name_font = QFont("Helvetica", 26, QFont.Bold)
+        painter.setFont(name_font)
+        name_grad = QLinearGradient(w * 0.25, 0, w * 0.75, 0)
+        name_grad.setColorAt(0.0, QColor(80, 180, 255))
+        name_grad.setColorAt(0.5, QColor(200, 80, 255))
+        name_grad.setColorAt(1.0, QColor(255, 80, 160))
+        painter.setPen(QPen(QColor(220, 220, 255)))
+        name_rect = QRectF(0, cy + 115, w, 36)
+        painter.drawText(name_rect, Qt.AlignHCenter | Qt.AlignVCenter, "SoundReactive")
+
+        # ── Tagline ─────────────────────────────────────────────────────
+        tag_font = QFont("Helvetica", 11)
+        painter.setFont(tag_font)
+        painter.setPen(QPen(QColor(160, 140, 200)))
+        tag_rect = QRectF(0, cy + 152, w, 22)
+        painter.drawText(tag_rect, Qt.AlignHCenter | Qt.AlignVCenter,
+                         "Audio-Reactive Video Generator")
+
+        # ── Progress bar ────────────────────────────────────────────────
+        bar_y = h - 22
+        bar_h = 4
+        bar_margin = 40
+        bar_w = w - 2 * bar_margin
+        # Track
+        painter.setBrush(QBrush(QColor(50, 40, 70)))
+        painter.setPen(Qt.NoPen)
+        painter.drawRoundedRect(bar_margin, bar_y, bar_w, bar_h, 2, 2)
+        # Fill
+        fill_w = int(bar_w * self._progress / 100)
+        if fill_w > 0:
+            fill_grad = QLinearGradient(bar_margin, 0, bar_margin + fill_w, 0)
+            fill_grad.setColorAt(0.0, QColor(80, 180, 255))
+            fill_grad.setColorAt(1.0, QColor(200, 80, 255))
+            painter.setBrush(QBrush(fill_grad))
+            painter.drawRoundedRect(bar_margin, bar_y, fill_w, bar_h, 2, 2)
+
+        painter.end()
 
 
 class SoundReactiveGUI(QMainWindow):
@@ -48,8 +213,8 @@ class SoundReactiveGUI(QMainWindow):
 
         # Set application icon (used in Dock, window title bar, and Alt-Tab on macOS)
         _icon_candidates = [
-            os.path.join(os.path.dirname(os.path.abspath(__file__)), "SoundReactive.icns"),
-            os.path.join(os.path.dirname(os.path.abspath(__file__)), "SoundReactive_Logo_Transparent_BG.png"),
+            resource_path("SoundReactive.icns"),
+            resource_path("SoundReactive_Logo_Transparent_BG.png"),
         ]
         for _icon_path in _icon_candidates:
             if os.path.exists(_icon_path):
@@ -1155,7 +1320,7 @@ class SoundReactiveGUI(QMainWindow):
     
     def load_logo(self):
         """Load application logo"""
-        logo_path = "SoundReactive_Logo_Transparent_BG.png"
+        logo_path = resource_path("SoundReactive_Logo_Transparent_BG.png")
         if os.path.exists(logo_path):
             try:
                 pixmap = QPixmap(logo_path)
@@ -1163,8 +1328,11 @@ class SoundReactiveGUI(QMainWindow):
                     # Scale to match header logo label size
                     scaled_pixmap = pixmap.scaled(160, 64, Qt.KeepAspectRatio, Qt.SmoothTransformation)
                     self.logo_label.setPixmap(scaled_pixmap)
+                    self.logo_label.setText("")  # clear placeholder text
             except Exception as e:
                 print(f"Could not load logo: {e}")
+        else:
+            print(f"Logo not found at: {logo_path}")
     
     def show_about_dialog(self):
         """Show About dialog with app information"""
@@ -2915,11 +3083,27 @@ def main():
     app.setApplicationName("SoundReactive")
     app.setApplicationDisplayName("SoundReactive")
     app.setOrganizationName("SoundReactive")
-    
+
+    # Show animated splash screen while the main window initialises
+    splash = SoundReactiveSplash(duration_ms=2800)
+    screen_geo = app.primaryScreen().availableGeometry()
+    splash.move(
+        screen_geo.center().x() - splash.width() // 2,
+        screen_geo.center().y() - splash.height() // 2,
+    )
+    splash.show()
+    app.processEvents()
+
     print("Creating PyQt5 GUI...")
     window = SoundReactiveGUI()
-    window.show()
-    
+
+    # Delay main window show until splash has had time to display
+    def _show_main():
+        window.show()
+        window.raise_()
+
+    QTimer.singleShot(2800, _show_main)
+
     print("Starting event loop...")
     sys.exit(app.exec_())
 
