@@ -293,8 +293,8 @@ class SoundReactiveGUI(QMainWindow):
         
         # Main layout
         main_layout = QVBoxLayout(central_widget)
-        main_layout.setSpacing(10)
-        main_layout.setContentsMargins(10, 10, 10, 10)
+        main_layout.setSpacing(4)
+        main_layout.setContentsMargins(8, 6, 8, 6)
         
         # Header
         header = self.create_header()
@@ -320,12 +320,12 @@ class SoundReactiveGUI(QMainWindow):
         """Create header with logo and title"""
         header = QFrame()
         header_layout = QHBoxLayout(header)
-        header_layout.setContentsMargins(15, 15, 15, 15)
-        header_layout.setSpacing(20)
+        header_layout.setContentsMargins(10, 8, 10, 8)
+        header_layout.setSpacing(12)
         
-        # Logo - made larger
+        # Logo
         self.logo_label = QLabel("[Logo]")
-        self.logo_label.setFixedSize(400, 160)  # Increased from 200x80
+        self.logo_label.setFixedSize(160, 64)
         header_layout.addWidget(self.logo_label)
         
         # Title and subtitle
@@ -335,12 +335,13 @@ class SoundReactiveGUI(QMainWindow):
         title_layout.setSpacing(5)
         
         title_label = QLabel("SoundReactive")
-        title_font = QFont("Helvetica", 24, QFont.Bold)
+        title_font = QFont("Helvetica", 18, QFont.Bold)
         title_label.setFont(title_font)
         title_layout.addWidget(title_label)
         
         subtitle_label = QLabel("Audio-Reactive Video Generator")
-        subtitle_font = QFont("Helvetica", 14)
+        subtitle_font = QFont("Helvetica", 11)
+        subtitle_label.setFont(subtitle_font)
         subtitle_label.setStyleSheet("color: #666;")
         title_layout.addWidget(subtitle_label)
         
@@ -375,14 +376,15 @@ class SoundReactiveGUI(QMainWindow):
         # Scroll area for controls
         scroll_area = QScrollArea()
         scroll_area.setWidgetResizable(True)
-        scroll_area.setFixedWidth(500)
+        scroll_area.setMinimumWidth(380)
+        scroll_area.setMaximumWidth(480)
         scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         
         # Container widget for controls
         controls_widget = QWidget()
         controls_layout = QVBoxLayout(controls_widget)
-        controls_layout.setSpacing(20)  # Increased from 10 to 20 for better spacing
-        controls_layout.setContentsMargins(15, 15, 15, 15)  # Increased margins
+        controls_layout.setSpacing(10)
+        controls_layout.setContentsMargins(10, 10, 10, 10)
         
         # Create all control groups
         self.create_file_controls(controls_layout)
@@ -418,12 +420,9 @@ class SoundReactiveGUI(QMainWindow):
             }
         """)
         layout = QVBoxLayout()
-        layout.setSpacing(12)  # Better spacing
+        layout.setSpacing(8)
         
-        # Mode selector
-        mode_layout = QHBoxLayout()
-        mode_layout.addWidget(QLabel("Mode:"))
-        
+        # Mode selector – two rows so labels don't overflow the panel
         self.mode_group = QButtonGroup()
         self.mode_video_radio = QRadioButton("Video")
         self.mode_video_radio.setChecked(True)
@@ -438,13 +437,19 @@ class SoundReactiveGUI(QMainWindow):
         self.mode_image_radio.toggled.connect(self.on_mode_change)
         self.mode_folder_radio.toggled.connect(self.on_mode_change)
         self.mode_webcam_radio.toggled.connect(self.on_mode_change)
-        
-        mode_layout.addWidget(self.mode_video_radio)
-        mode_layout.addWidget(self.mode_image_radio)
-        mode_layout.addWidget(self.mode_folder_radio)
-        mode_layout.addWidget(self.mode_webcam_radio)
-        mode_layout.addStretch()
-        layout.addLayout(mode_layout)
+
+        mode_row1 = QHBoxLayout()
+        mode_row1.addWidget(QLabel("Mode:"))
+        mode_row1.addWidget(self.mode_video_radio)
+        mode_row1.addWidget(self.mode_image_radio)
+        mode_row1.addStretch()
+        mode_row2 = QHBoxLayout()
+        mode_row2.addSpacing(46)  # align under radio buttons
+        mode_row2.addWidget(self.mode_folder_radio)
+        mode_row2.addWidget(self.mode_webcam_radio)
+        mode_row2.addStretch()
+        layout.addLayout(mode_row1)
+        layout.addLayout(mode_row2)
         
         # File buttons
         button_layout = QHBoxLayout()
@@ -537,7 +542,7 @@ class SoundReactiveGUI(QMainWindow):
             }
         """)
         layout = QVBoxLayout()
-        layout.setSpacing(15)  # Increased spacing between controls
+        layout.setSpacing(8)
         
         # Zoom (1.0-2.0, default 1.3)
         zoom_layout = QHBoxLayout()
@@ -611,7 +616,7 @@ class SoundReactiveGUI(QMainWindow):
             }
         """)
         layout = QVBoxLayout()
-        layout.setSpacing(15)  # Increased spacing
+        layout.setSpacing(8)
         
         # Intensity sensitivity (0.0-1.0, default 0.7)
         intensity_layout = QHBoxLayout()
@@ -707,7 +712,7 @@ class SoundReactiveGUI(QMainWindow):
             }
         """)
         layout = QVBoxLayout()
-        layout.setSpacing(12)
+        layout.setSpacing(8)
         
         # Effect mode
         mode_layout = QHBoxLayout()
@@ -759,7 +764,7 @@ class SoundReactiveGUI(QMainWindow):
             }
         """)
         layout = QVBoxLayout()
-        layout.setSpacing(12)
+        layout.setSpacing(6)
         
         # Effect checkboxes
         effects = [
@@ -817,7 +822,7 @@ class SoundReactiveGUI(QMainWindow):
             }
         """)
         layout = QVBoxLayout()
-        layout.setSpacing(12)
+        layout.setSpacing(8)
 
         desc = QLabel("Add organic, continuous movement independent of audio beats.")
         desc.setWordWrap(True)
@@ -1144,8 +1149,8 @@ class SoundReactiveGUI(QMainWindow):
             try:
                 pixmap = QPixmap(logo_path)
                 if not pixmap.isNull():
-                    # Scale to larger size (400x160 as set in header)
-                    scaled_pixmap = pixmap.scaled(400, 160, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                    # Scale to match header logo label size
+                    scaled_pixmap = pixmap.scaled(160, 64, Qt.KeepAspectRatio, Qt.SmoothTransformation)
                     self.logo_label.setPixmap(scaled_pixmap)
             except Exception as e:
                 print(f"Could not load logo: {e}")
