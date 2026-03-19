@@ -1,6 +1,8 @@
 #!/bin/bash
 # build_mac.sh
 # Automates the creation of a macOS .app bundle and .dmg installer for SoundReactive.
+# Privacy keys (NSCameraUsageDescription, NSMicrophoneUsageDescription) are baked
+# into Info.plist via SoundReactive.spec so macOS TCC never kills the process.
 
 set -e
 
@@ -22,43 +24,41 @@ fi
 echo "🧹 Cleaning previous builds..."
 rm -rf build/ dist/ SoundReactive.dmg
 
-# 3. Build the .app bundle with PyInstaller
-echo "📦 Running PyInstaller..."
-pyinstaller --name "SoundReactive" \
-            --windowed \
-            --icon "SoundReactive.icns" \
-            --add-data "SoundReactive_Logo_Transparent_BG.png:." \
-            --add-data "SoundReactive.icns:." \
-            --hidden-import "librosa" \
-            --hidden-import "soundfile" \
-            --hidden-import "numba" \
-            --hidden-import "PyQt5.QtMultimedia" \
-            --hidden-import "PyQt5.QtMultimediaWidgets" \
-            app.py
+# 3. Build the .app bundle using the spec file
+#    The spec file bakes NSCameraUsageDescription and NSMicrophoneUsageDescription
+#    directly into Info.plist at compile time.
+echo "📦 Running PyInstaller (using SoundReactive.spec)..."
+pyinstaller SoundReactive.spec
 
-# 4. Inject macOS privacy usage descriptions into Info.plist
-#    Without these keys macOS TCC kills the process the moment it
-#    tries to access the camera or microphone.
-echo "🔑 Adding privacy usage descriptions to Info.plist..."
+# 4. Verify the privacy keys made it into Info.plist
+echo "🔍 Verifying Info.plist privacy keys..."
 INFO_PLIST="dist/SoundReactive.app/Contents/Info.plist"
 
-/usr/libexec/PlistBuddy -c \
-  "Add :NSCameraUsageDescription string 'SoundReactive uses your camera to apply real-time audio-reactive visual effects to your webcam feed.'" \
-  "$INFO_PLIST" 2>/dev/null || \
-/usr/libexec/PlistBuddy -c \
-  "Set :NSCameraUsageDescription 'SoundReactive uses your camera to apply real-time audio-reactive visual effects to your webcam feed.'" \
-  "$INFO_PLIST"
+if /usr/libexec/PlistBuddy -c "Print :NSCameraUsageDescription" "$INFO_PLIST" &>/dev/null; then
+    echo "   ✅ NSCameraUsageDescription found."
+else
+    echo "   ⚠️  NSCameraUsageDescription missing — injecting manually..."
+    /usr/libexec/PlistBuddy -c \
+      "Add :NSCameraUsageDescription string 'SoundReactive uses your camera to apply real-time audio-reactive visual effects to your webcam feed.'" \
+      "$INFO_PLIST"
+fi
 
-/usr/libexec/PlistBuddy -c \
-  "Add :NSMicrophoneUsageDescription string 'SoundReactive may access the microphone for live audio analysis during webcam recording.'" \
-  "$INFO_PLIST" 2>/dev/null || \
-/usr/libexec/PlistBuddy -c \
-  "Set :NSMicrophoneUsageDescription 'SoundReactive may access the microphone for live audio analysis during webcam recording.'" \
-  "$INFO_PLIST"
+if /usr/libexec/PlistBuddy -c "Print :NSMicrophoneUsageDescription" "$INFO_PLIST" &>/dev/null; then
+    echo "   ✅ NSMicrophoneUsageDescription found."
+else
+    echo "   ⚠️  NSMicrophoneUsageDescription missing — injecting manually..."
+    /usr/libexec/PlistBuddy -c \
+      "Add :NSMicrophoneUsageDescription string 'SoundReactive may access the microphone for live audio analysis during webcam recording.'" \
+      "$INFO_PLIST"
+fi
 
-echo "✅ Privacy descriptions added."
+# 5. Reset the TCC permission cache for this app so macOS re-evaluates
+#    the new Info.plist on next launch (avoids stale "no permission" state).
+echo "🔑 Resetting TCC permission cache for SoundReactive..."
+tccutil reset Camera com.soundreactive.app 2>/dev/null || true
+tccutil reset Microphone com.soundreactive.app 2>/dev/null || true
 
-# 5. Create the DMG
+# 6. Create the DMG
 echo "💿 Creating DMG installer..."
 create-dmg \
   --volname "SoundReactive" \
@@ -72,4 +72,10 @@ create-dmg \
   "SoundReactive.dmg" \
   "dist/"
 
-echo "✅ Build complete! You can find your installer at: SoundReactive.dmg"
+echo ""
+echo "✅ Build complete!  →  SoundReactive.dmg"
+echo ""
+echo "📋 After installing the new DMG:"
+echo "   1. Delete the old SoundReactive.app from /Applications first."
+echo "   2. Open the new DMG and drag SoundReactive to /Applications."
+echo "   3. Launch the app — macOS will ask for camera permission once."
