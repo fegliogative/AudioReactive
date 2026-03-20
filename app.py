@@ -9,7 +9,8 @@ from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QPushButton, QSlider, QSpinBox, QDoubleSpinBox, QCheckBox,
     QRadioButton, QButtonGroup, QGroupBox, QFileDialog, QScrollArea,
-    QFrame, QComboBox, QProgressBar, QMessageBox, QSplitter
+    QFrame, QComboBox, QProgressBar, QMessageBox, QSplitter,
+    QGridLayout, QSizePolicy
 )
 from PyQt5.QtCore import Qt, QThread, pyqtSignal, QTimer, QObject, QUrl
 from PyQt5.QtGui import QPixmap, QImage, QFont, QIcon
@@ -501,9 +502,9 @@ class SoundReactiveGUI(QMainWindow):
         right_panel = self.create_preview_panel()
         splitter.addWidget(right_panel)
 
-        # Give controls ~340 px and the rest to the preview by default.
+        # Give controls ~420 px and the rest to the preview by default.
         # These are initial sizes; the user can drag the handle freely.
-        splitter.setSizes([340, 9999])
+        splitter.setSizes([420, 9999])
         splitter.setStretchFactor(0, 0)   # controls panel: don't stretch
         splitter.setStretchFactor(1, 1)   # preview panel: absorbs extra space
 
@@ -576,6 +577,9 @@ class SoundReactiveGUI(QMainWindow):
         
         # Container widget for controls
         controls_widget = QWidget()
+        # Expanding horizontally ensures the widget fills the scroll area
+        # viewport exactly — no wider, no narrower — so sliders never overflow.
+        controls_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         controls_layout = QVBoxLayout(controls_widget)
         controls_layout.setSpacing(10)
         controls_layout.setContentsMargins(10, 10, 10, 10)
@@ -645,28 +649,30 @@ class SoundReactiveGUI(QMainWindow):
         layout.addLayout(mode_row1)
         layout.addLayout(mode_row2)
         
-        # File buttons
-        button_layout = QHBoxLayout()
+        # File buttons — 2×2 grid so they never overflow the panel width
+        btn_grid = QGridLayout()
+        btn_grid.setSpacing(4)
+
         self.load_video_btn = QPushButton("Load Video")
         self.load_video_btn.clicked.connect(self.load_video)
-        button_layout.addWidget(self.load_video_btn)
-        
+        btn_grid.addWidget(self.load_video_btn, 0, 0)
+
         self.load_image_btn = QPushButton("Load Image")
         self.load_image_btn.clicked.connect(self.load_image)
         self.load_image_btn.setEnabled(False)
-        button_layout.addWidget(self.load_image_btn)
-        
+        btn_grid.addWidget(self.load_image_btn, 0, 1)
+
         self.load_folder_btn = QPushButton("Load Image Folder")
         self.load_folder_btn.clicked.connect(self.load_image_folder)
         self.load_folder_btn.setEnabled(False)
-        button_layout.addWidget(self.load_folder_btn)
-        
+        btn_grid.addWidget(self.load_folder_btn, 1, 0)
+
         self.load_audio_btn = QPushButton("Load Audio")
         self.load_audio_btn.clicked.connect(self.load_audio)
         self.load_audio_btn.setEnabled(False)
-        button_layout.addWidget(self.load_audio_btn)
-        layout.addLayout(button_layout)
-        
+        btn_grid.addWidget(self.load_audio_btn, 1, 1)
+
+        layout.addLayout(btn_grid)  
         # Webcam controls (only visible in webcam mode)
         self.webcam_controls_frame = QFrame()
         self.webcam_controls_layout = QHBoxLayout(self.webcam_controls_frame)
@@ -1151,35 +1157,38 @@ class SoundReactiveGUI(QMainWindow):
         print("  Creating preview panel...")
         panel = QFrame()
         layout = QVBoxLayout(panel)
-        
-        # Preview mode selector
-        mode_group = QGroupBox("Preview Mode")
-        mode_layout = QVBoxLayout()
+        layout.setSpacing(4)
+        layout.setContentsMargins(4, 4, 4, 4)
+
+        # Preview mode selector — compact horizontal toolbar (no group box)
+        mode_toolbar = QHBoxLayout()
+        mode_toolbar.setSpacing(12)
+        mode_toolbar.addWidget(QLabel("Preview:"))
         self.preview_mode_group = QButtonGroup()
-        
+
         self.preview_original_radio = QRadioButton("Original")
         self.preview_original_radio.setChecked(True)
         self.preview_processed_radio = QRadioButton("Processed")
         self.preview_side_by_side_radio = QRadioButton("Side by Side")
-        
+
         self.preview_mode_group.addButton(self.preview_original_radio, 0)
         self.preview_mode_group.addButton(self.preview_processed_radio, 1)
         self.preview_mode_group.addButton(self.preview_side_by_side_radio, 2)
-        
+
         self.preview_original_radio.toggled.connect(self.update_preview)
         self.preview_processed_radio.toggled.connect(self.update_preview)
         self.preview_side_by_side_radio.toggled.connect(self.update_preview)
-        
-        mode_layout.addWidget(self.preview_original_radio)
-        mode_layout.addWidget(self.preview_processed_radio)
-        mode_layout.addWidget(self.preview_side_by_side_radio)
-        mode_group.setLayout(mode_layout)
-        layout.addWidget(mode_group)
+
+        mode_toolbar.addWidget(self.preview_original_radio)
+        mode_toolbar.addWidget(self.preview_processed_radio)
+        mode_toolbar.addWidget(self.preview_side_by_side_radio)
+        mode_toolbar.addStretch()
+        layout.addLayout(mode_toolbar)
         
         # Preview canvas
         self.preview_label = QLabel("No preview available")
         self.preview_label.setAlignment(Qt.AlignCenter)
-        self.preview_label.setMinimumSize(400, 225)
+        self.preview_label.setMinimumSize(200, 112)  # allow the preview to shrink freely with the splitter
         self.preview_label.setStyleSheet("background-color: black; color: white;")
         layout.addWidget(self.preview_label, stretch=1)
         
