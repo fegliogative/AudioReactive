@@ -9,7 +9,7 @@ from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QPushButton, QSlider, QSpinBox, QDoubleSpinBox, QCheckBox,
     QRadioButton, QButtonGroup, QGroupBox, QFileDialog, QScrollArea,
-    QFrame, QComboBox, QProgressBar, QMessageBox
+    QFrame, QComboBox, QProgressBar, QMessageBox, QSplitter
 )
 from PyQt5.QtCore import Qt, QThread, pyqtSignal, QTimer, QObject, QUrl
 from PyQt5.QtGui import QPixmap, QImage, QFont, QIcon
@@ -476,19 +476,38 @@ class SoundReactiveGUI(QMainWindow):
         header = self.create_header()
         main_layout.addWidget(header)
         
-        # Content area (horizontal split)
-        content_layout = QHBoxLayout()
-        content_layout.setSpacing(10)
-        
+        # Content area — resizable horizontal splitter so the user can
+        # drag the divider and the controls panel never needs to scroll
+        # horizontally regardless of window size.
+        splitter = QSplitter(Qt.Horizontal)
+        splitter.setHandleWidth(6)
+        splitter.setChildrenCollapsible(False)
+        splitter.setStyleSheet("""
+            QSplitter::handle {
+                background: #3a3a4a;
+                border-left: 1px solid #555;
+                border-right: 1px solid #555;
+            }
+            QSplitter::handle:hover {
+                background: #5a5a7a;
+            }
+        """)
+
         # Left panel: Controls (scrollable)
         left_panel = self.create_controls_panel()
-        content_layout.addWidget(left_panel, stretch=0)
-        
+        splitter.addWidget(left_panel)
+
         # Right panel: Preview
         right_panel = self.create_preview_panel()
-        content_layout.addWidget(right_panel, stretch=1)
-        
-        main_layout.addLayout(content_layout, stretch=1)
+        splitter.addWidget(right_panel)
+
+        # Give controls ~340 px and the rest to the preview by default.
+        # These are initial sizes; the user can drag the handle freely.
+        splitter.setSizes([340, 9999])
+        splitter.setStretchFactor(0, 0)   # controls panel: don't stretch
+        splitter.setStretchFactor(1, 1)   # preview panel: absorbs extra space
+
+        main_layout.addWidget(splitter, stretch=1)
         
         print("PyQt5 UI created successfully")
     
@@ -501,7 +520,7 @@ class SoundReactiveGUI(QMainWindow):
         
         # Logo
         self.logo_label = QLabel("[Logo]")
-        self.logo_label.setFixedSize(160, 64)
+        self.logo_label.setFixedSize(80, 48)
         header_layout.addWidget(self.logo_label)
         
         # Title and subtitle
@@ -552,8 +571,7 @@ class SoundReactiveGUI(QMainWindow):
         # Scroll area for controls
         scroll_area = QScrollArea()
         scroll_area.setWidgetResizable(True)
-        scroll_area.setMinimumWidth(380)
-        scroll_area.setMaximumWidth(480)
+        scroll_area.setMinimumWidth(300)   # never narrower than this
         scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         
         # Container widget for controls
@@ -1161,7 +1179,7 @@ class SoundReactiveGUI(QMainWindow):
         # Preview canvas
         self.preview_label = QLabel("No preview available")
         self.preview_label.setAlignment(Qt.AlignCenter)
-        self.preview_label.setMinimumSize(640, 360)
+        self.preview_label.setMinimumSize(400, 225)
         self.preview_label.setStyleSheet("background-color: black; color: white;")
         layout.addWidget(self.preview_label, stretch=1)
         
@@ -1326,7 +1344,7 @@ class SoundReactiveGUI(QMainWindow):
                 pixmap = QPixmap(logo_path)
                 if not pixmap.isNull():
                     # Scale to match header logo label size
-                    scaled_pixmap = pixmap.scaled(160, 64, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                    scaled_pixmap = pixmap.scaled(80, 48, Qt.KeepAspectRatio, Qt.SmoothTransformation)
                     self.logo_label.setPixmap(scaled_pixmap)
                     self.logo_label.setText("")  # clear placeholder text
             except Exception as e:
