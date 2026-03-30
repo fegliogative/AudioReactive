@@ -9,11 +9,10 @@ from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QPushButton, QSlider, QSpinBox, QDoubleSpinBox, QCheckBox,
     QRadioButton, QButtonGroup, QGroupBox, QFileDialog, QScrollArea,
-    QFrame, QComboBox, QProgressBar, QMessageBox, QSplitter,
-    QGridLayout, QSizePolicy
+    QFrame, QComboBox, QProgressBar, QMessageBox
 )
 from PyQt5.QtCore import Qt, QThread, pyqtSignal, QTimer, QObject, QUrl
-from PyQt5.QtGui import QPixmap, QImage, QFont, QIcon
+from PyQt5.QtGui import QPixmap, QImage, QFont
 from PyQt5.QtMultimedia import QMediaPlayer, QMediaContent
 import cv2
 import numpy as np
@@ -27,21 +26,63 @@ from image_to_video import ImageToVideoProcessor
 from custom_modals import CustomMessageBox, CustomQuestion
 import tempfile
 import subprocess
+import shutil
 import random
 import time
 
 
-def resource_path(relative_name: str) -> str:
+def get_ffmpeg_path() -> str:
     """
-    Return the absolute path to a bundled resource file.
+    Resolve the absolute path to the ffmpeg executable.
 
-    When running as a PyInstaller .app bundle, sys._MEIPASS points to the
-    temporary folder where all --add-data files are extracted.  When running
-    directly from source, we look next to the script file itself.
+    Resolution order:
+    1. ``FFMPEG_PATH`` environment variable (user override).
+    2. ``shutil.which('ffmpeg')`` — honours the current ``PATH``.
+    3. Common macOS Homebrew installation prefixes (Apple Silicon and Intel).
+    4. ``imageio_ffmpeg`` bundled binary (installed via ``pip install imageio-ffmpeg``).
+
+    Raises
+    ------
+    FileNotFoundError
+        When ffmpeg cannot be located through any of the above strategies.
     """
-    if hasattr(sys, '_MEIPASS'):
-        return os.path.join(sys._MEIPASS, relative_name)
-    return os.path.join(os.path.dirname(os.path.abspath(__file__)), relative_name)
+    # 1. Explicit environment override
+    env_path = os.environ.get("FFMPEG_PATH")
+    if env_path and os.path.isfile(env_path):
+        return env_path
+
+    # 2. Standard PATH lookup
+    which_path = shutil.which("ffmpeg")
+    if which_path:
+        return which_path
+
+    # 3. Well-known macOS Homebrew locations (GUI apps often run with a stripped PATH)
+    homebrew_candidates = [
+        "/opt/homebrew/bin/ffmpeg",   # Apple Silicon (M1/M2/M3/M4)
+        "/usr/local/bin/ffmpeg",       # Intel Homebrew
+        "/usr/bin/ffmpeg",             # System package (Linux / some macOS)
+    ]
+    for candidate in homebrew_candidates:
+        if os.path.isfile(candidate):
+            return candidate
+
+    # 4. imageio_ffmpeg bundled binary
+    try:
+        import imageio_ffmpeg  # type: ignore
+        bundled = imageio_ffmpeg.get_ffmpeg_exe()
+        if bundled and os.path.isfile(bundled):
+            return bundled
+    except Exception:
+        pass
+
+    raise FileNotFoundError(
+        "ffmpeg could not be found.\n\n"
+        "Please install it and ensure it is on your PATH:\n"
+        "  macOS:  brew install ffmpeg\n"
+        "  Linux:  sudo apt install ffmpeg\n\n"
+        "Alternatively, set the FFMPEG_PATH environment variable "
+        "to the full path of the ffmpeg binary."
+    )
 
 
 class ProcessingSignals(QObject):
@@ -49,158 +90,6 @@ class ProcessingSignals(QObject):
     progress_update = pyqtSignal(int, str)  # progress_percent, status_message
     frame_update = pyqtSignal(object)  # frame (numpy array)
     analysis_progress = pyqtSignal(str)  # analysis status message
-
-
-class SoundReactiveSplash(QWidget):
-    """
-    Animated splash screen shown while the main window loads.
-
-    Design: dark background, centred logo that fades in and gently pulses,
-    app name + tagline below, and a thin animated progress bar at the bottom.
-    The splash closes itself after `duration_ms` milliseconds.
-    """
-
-    def __init__(self, duration_ms: int = 2800) -> None:
-        super().__init__()
-        self._duration_ms = duration_ms
-        self._opacity = 0.0
-        self._pulse_phase = 0.0
-        self._progress = 0
-
-        # Frameless, always-on-top, translucent window
-        self.setWindowFlags(
-            Qt.SplashScreen | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint
-        )
-        self.setAttribute(Qt.WA_TranslucentBackground)
-
-        # Fixed size – centred on screen later
-        self.setFixedSize(520, 340)
-
-        # Logo pixmap
-        self._logo_pixmap: QPixmap | None = None
-        logo_path = resource_path("SoundReactive_Logo_Transparent_BG.png")
-        if os.path.exists(logo_path):
-            px = QPixmap(logo_path)
-            if not px.isNull():
-                self._logo_pixmap = px.scaled(
-                    200, 200, Qt.KeepAspectRatio, Qt.SmoothTransformation
-                )
-
-        # Fade-in + pulse timer (60 fps)
-        self._anim_timer = QTimer(self)
-        self._anim_timer.timeout.connect(self._tick)
-        self._anim_timer.start(16)  # ~60 fps
-
-        # Close timer
-        self._close_timer = QTimer(self)
-        self._close_timer.setSingleShot(True)
-        self._close_timer.timeout.connect(self._begin_fade_out)
-        self._close_timer.start(duration_ms)
-
-        self._fading_out = False
-
-    # ── Animation ────────────────────────────────────────────────────────
-
-    def _tick(self) -> None:
-        if not self._fading_out:
-            # Fade in over ~600 ms (0.016 s * 37 ticks ≈ 0.6 s)
-            if self._opacity < 1.0:
-                self._opacity = min(1.0, self._opacity + 0.027)
-            # Gentle pulse: ±3 % scale
-            self._pulse_phase = (self._pulse_phase + 0.04) % (2 * 3.14159)
-            # Progress bar advances linearly
-            self._progress = min(
-                100,
-                int(self._progress + 100 / (self._duration_ms / 16))
-            )
-        else:
-            self._opacity = max(0.0, self._opacity - 0.045)
-            if self._opacity <= 0.0:
-                self._anim_timer.stop()
-                self.close()
-        self.update()
-
-    def _begin_fade_out(self) -> None:
-        self._fading_out = True
-
-    # ── Painting ─────────────────────────────────────────────────────────
-
-    def paintEvent(self, event) -> None:  # noqa: N802
-        import math
-        from PyQt5.QtGui import QPainter, QColor, QLinearGradient, QPen, QBrush
-        from PyQt5.QtCore import QRectF, QPointF
-
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.Antialiasing)
-        painter.setOpacity(self._opacity)
-
-        w, h = self.width(), self.height()
-
-        # ── Background ──────────────────────────────────────────────────
-        bg_grad = QLinearGradient(0, 0, 0, h)
-        bg_grad.setColorAt(0.0, QColor(15, 15, 25))
-        bg_grad.setColorAt(1.0, QColor(25, 10, 40))
-        painter.setBrush(QBrush(bg_grad))
-        painter.setPen(Qt.NoPen)
-        painter.drawRoundedRect(0, 0, w, h, 18, 18)
-
-        # ── Subtle glow ring behind logo ─────────────────────────────────
-        pulse = 1.0 + 0.03 * math.sin(self._pulse_phase)
-        glow_r = int(110 * pulse)
-        cx, cy = w // 2, h // 2 - 30
-        for radius, alpha in [(glow_r + 30, 18), (glow_r + 15, 35), (glow_r, 55)]:
-            painter.setBrush(QBrush(QColor(140, 60, 220, alpha)))
-            painter.drawEllipse(QPointF(cx, cy), radius, radius)
-
-        # ── Logo ────────────────────────────────────────────────────────
-        if self._logo_pixmap:
-            lw = int(self._logo_pixmap.width() * pulse)
-            lh = int(self._logo_pixmap.height() * pulse)
-            scaled = self._logo_pixmap.scaled(
-                lw, lh, Qt.KeepAspectRatio, Qt.SmoothTransformation
-            )
-            lx = cx - scaled.width() // 2
-            ly = cy - scaled.height() // 2
-            painter.drawPixmap(lx, ly, scaled)
-
-        # ── App name ────────────────────────────────────────────────────
-        name_font = QFont("Helvetica", 26, QFont.Bold)
-        painter.setFont(name_font)
-        name_grad = QLinearGradient(w * 0.25, 0, w * 0.75, 0)
-        name_grad.setColorAt(0.0, QColor(80, 180, 255))
-        name_grad.setColorAt(0.5, QColor(200, 80, 255))
-        name_grad.setColorAt(1.0, QColor(255, 80, 160))
-        painter.setPen(QPen(QColor(220, 220, 255)))
-        name_rect = QRectF(0, cy + 115, w, 36)
-        painter.drawText(name_rect, Qt.AlignHCenter | Qt.AlignVCenter, "SoundReactive")
-
-        # ── Tagline ─────────────────────────────────────────────────────
-        tag_font = QFont("Helvetica", 11)
-        painter.setFont(tag_font)
-        painter.setPen(QPen(QColor(160, 140, 200)))
-        tag_rect = QRectF(0, cy + 152, w, 22)
-        painter.drawText(tag_rect, Qt.AlignHCenter | Qt.AlignVCenter,
-                         "Audio-Reactive Video Generator")
-
-        # ── Progress bar ────────────────────────────────────────────────
-        bar_y = h - 22
-        bar_h = 4
-        bar_margin = 40
-        bar_w = w - 2 * bar_margin
-        # Track
-        painter.setBrush(QBrush(QColor(50, 40, 70)))
-        painter.setPen(Qt.NoPen)
-        painter.drawRoundedRect(bar_margin, bar_y, bar_w, bar_h, 2, 2)
-        # Fill
-        fill_w = int(bar_w * self._progress / 100)
-        if fill_w > 0:
-            fill_grad = QLinearGradient(bar_margin, 0, bar_margin + fill_w, 0)
-            fill_grad.setColorAt(0.0, QColor(80, 180, 255))
-            fill_grad.setColorAt(1.0, QColor(200, 80, 255))
-            painter.setBrush(QBrush(fill_grad))
-            painter.drawRoundedRect(bar_margin, bar_y, fill_w, bar_h, 2, 2)
-
-        painter.end()
 
 
 class SoundReactiveGUI(QMainWindow):
@@ -211,17 +100,6 @@ class SoundReactiveGUI(QMainWindow):
         self.setWindowTitle("SoundReactive - Audio-Reactive Video Generator")
         self.setGeometry(100, 100, 1400, 900)
         self.setMinimumSize(1200, 800)
-
-        # Set application icon (used in Dock, window title bar, and Alt-Tab on macOS)
-        _icon_candidates = [
-            resource_path("SoundReactive.icns"),
-            resource_path("SoundReactive_Logo_Transparent_BG.png"),
-        ]
-        for _icon_path in _icon_candidates:
-            if os.path.exists(_icon_path):
-                self.setWindowIcon(QIcon(_icon_path))
-                QApplication.setWindowIcon(QIcon(_icon_path))
-                break
         
         # Application state
         self.video_path = None
@@ -404,10 +282,6 @@ class SoundReactiveGUI(QMainWindow):
             ]
         }
         
-        # Natural motion persistent drift state (for preview smoothing)
-        self._nm_ad_smooth_x = 0.0
-        self._nm_ad_smooth_y = 0.0
-
         # Initialize frequency weights (using regular floats, not tk.DoubleVar)
         self.init_frequency_weights()
         
@@ -470,45 +344,26 @@ class SoundReactiveGUI(QMainWindow):
         
         # Main layout
         main_layout = QVBoxLayout(central_widget)
-        main_layout.setSpacing(4)
-        main_layout.setContentsMargins(8, 6, 8, 6)
+        main_layout.setSpacing(10)
+        main_layout.setContentsMargins(10, 10, 10, 10)
         
         # Header
         header = self.create_header()
         main_layout.addWidget(header)
         
-        # Content area — resizable horizontal splitter so the user can
-        # drag the divider and the controls panel never needs to scroll
-        # horizontally regardless of window size.
-        splitter = QSplitter(Qt.Horizontal)
-        splitter.setHandleWidth(6)
-        splitter.setChildrenCollapsible(False)
-        splitter.setStyleSheet("""
-            QSplitter::handle {
-                background: #3a3a4a;
-                border-left: 1px solid #555;
-                border-right: 1px solid #555;
-            }
-            QSplitter::handle:hover {
-                background: #5a5a7a;
-            }
-        """)
-
+        # Content area (horizontal split)
+        content_layout = QHBoxLayout()
+        content_layout.setSpacing(10)
+        
         # Left panel: Controls (scrollable)
         left_panel = self.create_controls_panel()
-        splitter.addWidget(left_panel)
-
+        content_layout.addWidget(left_panel, stretch=0)
+        
         # Right panel: Preview
         right_panel = self.create_preview_panel()
-        splitter.addWidget(right_panel)
-
-        # Give controls ~420 px and the rest to the preview by default.
-        # These are initial sizes; the user can drag the handle freely.
-        splitter.setSizes([420, 9999])
-        splitter.setStretchFactor(0, 0)   # controls panel: don't stretch
-        splitter.setStretchFactor(1, 1)   # preview panel: absorbs extra space
-
-        main_layout.addWidget(splitter, stretch=1)
+        content_layout.addWidget(right_panel, stretch=1)
+        
+        main_layout.addLayout(content_layout, stretch=1)
         
         print("PyQt5 UI created successfully")
     
@@ -516,12 +371,12 @@ class SoundReactiveGUI(QMainWindow):
         """Create header with logo and title"""
         header = QFrame()
         header_layout = QHBoxLayout(header)
-        header_layout.setContentsMargins(10, 8, 10, 8)
-        header_layout.setSpacing(12)
+        header_layout.setContentsMargins(15, 15, 15, 15)
+        header_layout.setSpacing(20)
         
-        # Logo
+        # Logo - made larger
         self.logo_label = QLabel("[Logo]")
-        self.logo_label.setFixedSize(80, 48)
+        self.logo_label.setFixedSize(400, 160)  # Increased from 200x80
         header_layout.addWidget(self.logo_label)
         
         # Title and subtitle
@@ -531,13 +386,12 @@ class SoundReactiveGUI(QMainWindow):
         title_layout.setSpacing(5)
         
         title_label = QLabel("SoundReactive")
-        title_font = QFont("Helvetica", 18, QFont.Bold)
+        title_font = QFont("Helvetica", 24, QFont.Bold)
         title_label.setFont(title_font)
         title_layout.addWidget(title_label)
         
         subtitle_label = QLabel("Audio-Reactive Video Generator")
-        subtitle_font = QFont("Helvetica", 11)
-        subtitle_label.setFont(subtitle_font)
+        subtitle_font = QFont("Helvetica", 14)
         subtitle_label.setStyleSheet("color: #666;")
         title_layout.addWidget(subtitle_label)
         
@@ -572,17 +426,14 @@ class SoundReactiveGUI(QMainWindow):
         # Scroll area for controls
         scroll_area = QScrollArea()
         scroll_area.setWidgetResizable(True)
-        scroll_area.setMinimumWidth(300)   # never narrower than this
+        scroll_area.setFixedWidth(500)
         scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         
         # Container widget for controls
         controls_widget = QWidget()
-        # Expanding horizontally ensures the widget fills the scroll area
-        # viewport exactly — no wider, no narrower — so sliders never overflow.
-        controls_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         controls_layout = QVBoxLayout(controls_widget)
-        controls_layout.setSpacing(10)
-        controls_layout.setContentsMargins(10, 10, 10, 10)
+        controls_layout.setSpacing(20)  # Increased from 10 to 20 for better spacing
+        controls_layout.setContentsMargins(15, 15, 15, 15)  # Increased margins
         
         # Create all control groups
         self.create_file_controls(controls_layout)
@@ -590,7 +441,6 @@ class SoundReactiveGUI(QMainWindow):
         self.create_advanced_controls(controls_layout)
         self.create_layer_blending_controls(controls_layout)
         self.create_effect_controls(controls_layout)
-        self.create_natural_motion_controls(controls_layout)
         self.create_action_buttons(controls_layout)
         
         # Add stretch at end
@@ -618,9 +468,12 @@ class SoundReactiveGUI(QMainWindow):
             }
         """)
         layout = QVBoxLayout()
-        layout.setSpacing(8)
+        layout.setSpacing(12)  # Better spacing
         
-        # Mode selector – two rows so labels don't overflow the panel
+        # Mode selector
+        mode_layout = QHBoxLayout()
+        mode_layout.addWidget(QLabel("Mode:"))
+        
         self.mode_group = QButtonGroup()
         self.mode_video_radio = QRadioButton("Video")
         self.mode_video_radio.setChecked(True)
@@ -635,44 +488,36 @@ class SoundReactiveGUI(QMainWindow):
         self.mode_image_radio.toggled.connect(self.on_mode_change)
         self.mode_folder_radio.toggled.connect(self.on_mode_change)
         self.mode_webcam_radio.toggled.connect(self.on_mode_change)
-
-        mode_row1 = QHBoxLayout()
-        mode_row1.addWidget(QLabel("Mode:"))
-        mode_row1.addWidget(self.mode_video_radio)
-        mode_row1.addWidget(self.mode_image_radio)
-        mode_row1.addStretch()
-        mode_row2 = QHBoxLayout()
-        mode_row2.addSpacing(46)  # align under radio buttons
-        mode_row2.addWidget(self.mode_folder_radio)
-        mode_row2.addWidget(self.mode_webcam_radio)
-        mode_row2.addStretch()
-        layout.addLayout(mode_row1)
-        layout.addLayout(mode_row2)
         
-        # File buttons — 2×2 grid so they never overflow the panel width
-        btn_grid = QGridLayout()
-        btn_grid.setSpacing(4)
-
+        mode_layout.addWidget(self.mode_video_radio)
+        mode_layout.addWidget(self.mode_image_radio)
+        mode_layout.addWidget(self.mode_folder_radio)
+        mode_layout.addWidget(self.mode_webcam_radio)
+        mode_layout.addStretch()
+        layout.addLayout(mode_layout)
+        
+        # File buttons
+        button_layout = QHBoxLayout()
         self.load_video_btn = QPushButton("Load Video")
         self.load_video_btn.clicked.connect(self.load_video)
-        btn_grid.addWidget(self.load_video_btn, 0, 0)
-
+        button_layout.addWidget(self.load_video_btn)
+        
         self.load_image_btn = QPushButton("Load Image")
         self.load_image_btn.clicked.connect(self.load_image)
         self.load_image_btn.setEnabled(False)
-        btn_grid.addWidget(self.load_image_btn, 0, 1)
-
+        button_layout.addWidget(self.load_image_btn)
+        
         self.load_folder_btn = QPushButton("Load Image Folder")
         self.load_folder_btn.clicked.connect(self.load_image_folder)
         self.load_folder_btn.setEnabled(False)
-        btn_grid.addWidget(self.load_folder_btn, 1, 0)
-
+        button_layout.addWidget(self.load_folder_btn)
+        
         self.load_audio_btn = QPushButton("Load Audio")
         self.load_audio_btn.clicked.connect(self.load_audio)
         self.load_audio_btn.setEnabled(False)
-        btn_grid.addWidget(self.load_audio_btn, 1, 1)
-
-        layout.addLayout(btn_grid)  
+        button_layout.addWidget(self.load_audio_btn)
+        layout.addLayout(button_layout)
+        
         # Webcam controls (only visible in webcam mode)
         self.webcam_controls_frame = QFrame()
         self.webcam_controls_layout = QHBoxLayout(self.webcam_controls_frame)
@@ -742,7 +587,7 @@ class SoundReactiveGUI(QMainWindow):
             }
         """)
         layout = QVBoxLayout()
-        layout.setSpacing(8)
+        layout.setSpacing(15)  # Increased spacing between controls
         
         # Zoom (1.0-2.0, default 1.3)
         zoom_layout = QHBoxLayout()
@@ -816,7 +661,7 @@ class SoundReactiveGUI(QMainWindow):
             }
         """)
         layout = QVBoxLayout()
-        layout.setSpacing(8)
+        layout.setSpacing(15)  # Increased spacing
         
         # Intensity sensitivity (0.0-1.0, default 0.7)
         intensity_layout = QHBoxLayout()
@@ -912,7 +757,7 @@ class SoundReactiveGUI(QMainWindow):
             }
         """)
         layout = QVBoxLayout()
-        layout.setSpacing(8)
+        layout.setSpacing(12)
         
         # Effect mode
         mode_layout = QHBoxLayout()
@@ -964,7 +809,7 @@ class SoundReactiveGUI(QMainWindow):
             }
         """)
         layout = QVBoxLayout()
-        layout.setSpacing(6)
+        layout.setSpacing(12)
         
         # Effect checkboxes
         effects = [
@@ -1003,133 +848,6 @@ class SoundReactiveGUI(QMainWindow):
         parent_layout.addWidget(group)
         print("    Effect controls created")
     
-    def create_natural_motion_controls(self, parent_layout):
-        """Create Natural Movement controls group"""
-        print("  Creating natural motion controls...")
-        group = QGroupBox("Natural Movement")
-        group.setStyleSheet("""
-            QGroupBox {
-                font-weight: bold;
-                border: 2px solid #ccc;
-                border-radius: 5px;
-                margin-top: 10px;
-                padding-top: 10px;
-            }
-            QGroupBox::title {
-                subcontrol-origin: margin;
-                left: 10px;
-                padding: 0 5px;
-            }
-        """)
-        layout = QVBoxLayout()
-        layout.setSpacing(8)
-
-        desc = QLabel("Add organic, continuous movement independent of audio beats.")
-        desc.setWordWrap(True)
-        desc.setStyleSheet("color: gray; font-size: 9pt;")
-        layout.addWidget(desc)
-
-        # ── Helper to build a labelled slider row ──────────────────────────
-        def _slider_row(label_text, attr_name, min_val, max_val, default_val,
-                        scale=1.0, suffix="", decimals=2):
-            row = QHBoxLayout()
-            row.addWidget(QLabel(label_text))
-            slider = QSlider(Qt.Horizontal)
-            slider.setMinimum(min_val)
-            slider.setMaximum(max_val)
-            slider.setValue(default_val)
-            value_label = QLabel(f"{default_val * scale:.{decimals}f}{suffix}")
-            value_label.setFixedWidth(55)
-
-            def _on_change(v, lbl=value_label, sc=scale, sf=suffix, dc=decimals):
-                lbl.setText(f"{v * sc:.{dc}f}{sf}")
-                self.update_preview()
-
-            slider.valueChanged.connect(_on_change)
-            row.addWidget(slider)
-            row.addWidget(value_label)
-            setattr(self, attr_name, slider)
-            return row
-
-        # ── 1. Ken Burns ───────────────────────────────────────────────────
-        self.ken_burns_check = QCheckBox("Ken Burns (slow pan & zoom)")
-        self.ken_burns_check.toggled.connect(self.update_preview)
-        layout.addWidget(self.ken_burns_check)
-
-        layout.addLayout(_slider_row(
-            "  Zoom Start:", "kb_zoom_start_slider", 100, 130, 100, 0.01, "x"))
-        layout.addLayout(_slider_row(
-            "  Zoom End:", "kb_zoom_end_slider", 100, 130, 108, 0.01, "x"))
-        layout.addLayout(_slider_row(
-            "  Pan X:", "kb_pan_x_slider", -100, 100, 0, 0.01, ""))
-        layout.addLayout(_slider_row(
-            "  Pan Y:", "kb_pan_y_slider", -100, 100, 0, 0.01, ""))
-
-        # ── 2. Noise Drift ─────────────────────────────────────────────────
-        self.noise_drift_check = QCheckBox("Organic Noise Drift")
-        self.noise_drift_check.toggled.connect(self.update_preview)
-        layout.addWidget(self.noise_drift_check)
-
-        layout.addLayout(_slider_row(
-            "  Amplitude (px):", "noise_amp_slider", 0, 40, 8, 1.0, "px", 0))
-        layout.addLayout(_slider_row(
-            "  Speed:", "noise_speed_slider", 1, 50, 10, 0.1, "x"))
-
-        # ── 3. Breathing Pulse ─────────────────────────────────────────────
-        self.breathing_check = QCheckBox("Breathing Pulse")
-        self.breathing_check.toggled.connect(self.update_preview)
-        layout.addWidget(self.breathing_check)
-
-        layout.addLayout(_slider_row(
-            "  Amplitude:", "breath_amp_slider", 0, 10, 2, 0.01, ""))
-        layout.addLayout(_slider_row(
-            "  Period (s):", "breath_period_slider", 10, 120, 40, 0.1, "s"))
-
-        # ── 4. Audio-Modulated Drift ───────────────────────────────────────
-        self.audio_drift_check = QCheckBox("Audio-Modulated Drift")
-        self.audio_drift_check.toggled.connect(self.update_preview)
-        layout.addWidget(self.audio_drift_check)
-
-        layout.addLayout(_slider_row(
-            "  Scale (px):", "audio_drift_scale_slider", 0, 30, 6, 1.0, "px", 0))
-
-        # ── 5. Rotation Sway ───────────────────────────────────────────────
-        self.sway_check = QCheckBox("Rotation Sway")
-        self.sway_check.toggled.connect(self.update_preview)
-        layout.addWidget(self.sway_check)
-
-        layout.addLayout(_slider_row(
-            "  Amplitude (°):", "sway_amp_slider", 0, 30, 5, 0.1, "°"))
-        layout.addLayout(_slider_row(
-            "  Period (s):", "sway_period_slider", 10, 200, 80, 0.1, "s"))
-
-        group.setLayout(layout)
-        parent_layout.addWidget(group)
-        print("    Natural motion controls created")
-
-    def get_natural_motion_params(self) -> dict:
-        """Read all Natural Movement slider values and return a params dict."""
-        return dict(
-            ken_burns_enabled=self.ken_burns_check.isChecked(),
-            ken_burns_zoom_start=self.kb_zoom_start_slider.value() * 0.01,
-            ken_burns_zoom_end=self.kb_zoom_end_slider.value() * 0.01,
-            ken_burns_pan_x=self.kb_pan_x_slider.value() * 0.01,
-            ken_burns_pan_y=self.kb_pan_y_slider.value() * 0.01,
-            noise_drift_enabled=self.noise_drift_check.isChecked(),
-            noise_drift_amplitude=float(self.noise_amp_slider.value()),
-            noise_drift_speed=self.noise_speed_slider.value() * 0.1,
-            noise_drift_seed=42,
-            breathing_enabled=self.breathing_check.isChecked(),
-            breathing_amplitude=self.breath_amp_slider.value() * 0.01,
-            breathing_period=self.breath_period_slider.value() * 0.1,
-            audio_drift_enabled=self.audio_drift_check.isChecked(),
-            audio_drift_scale=float(self.audio_drift_scale_slider.value()),
-            audio_drift_alpha=0.05,
-            sway_enabled=self.sway_check.isChecked(),
-            sway_amplitude=self.sway_amp_slider.value() * 0.1,
-            sway_period=self.sway_period_slider.value() * 0.1,
-        )
-
     def create_action_buttons(self, parent_layout):
         """Create action buttons"""
         print("  Creating action buttons...")
@@ -1157,38 +875,35 @@ class SoundReactiveGUI(QMainWindow):
         print("  Creating preview panel...")
         panel = QFrame()
         layout = QVBoxLayout(panel)
-        layout.setSpacing(4)
-        layout.setContentsMargins(4, 4, 4, 4)
-
-        # Preview mode selector — compact horizontal toolbar (no group box)
-        mode_toolbar = QHBoxLayout()
-        mode_toolbar.setSpacing(12)
-        mode_toolbar.addWidget(QLabel("Preview:"))
+        
+        # Preview mode selector
+        mode_group = QGroupBox("Preview Mode")
+        mode_layout = QVBoxLayout()
         self.preview_mode_group = QButtonGroup()
-
+        
         self.preview_original_radio = QRadioButton("Original")
         self.preview_original_radio.setChecked(True)
         self.preview_processed_radio = QRadioButton("Processed")
         self.preview_side_by_side_radio = QRadioButton("Side by Side")
-
+        
         self.preview_mode_group.addButton(self.preview_original_radio, 0)
         self.preview_mode_group.addButton(self.preview_processed_radio, 1)
         self.preview_mode_group.addButton(self.preview_side_by_side_radio, 2)
-
+        
         self.preview_original_radio.toggled.connect(self.update_preview)
         self.preview_processed_radio.toggled.connect(self.update_preview)
         self.preview_side_by_side_radio.toggled.connect(self.update_preview)
-
-        mode_toolbar.addWidget(self.preview_original_radio)
-        mode_toolbar.addWidget(self.preview_processed_radio)
-        mode_toolbar.addWidget(self.preview_side_by_side_radio)
-        mode_toolbar.addStretch()
-        layout.addLayout(mode_toolbar)
+        
+        mode_layout.addWidget(self.preview_original_radio)
+        mode_layout.addWidget(self.preview_processed_radio)
+        mode_layout.addWidget(self.preview_side_by_side_radio)
+        mode_group.setLayout(mode_layout)
+        layout.addWidget(mode_group)
         
         # Preview canvas
         self.preview_label = QLabel("No preview available")
         self.preview_label.setAlignment(Qt.AlignCenter)
-        self.preview_label.setMinimumSize(200, 112)  # allow the preview to shrink freely with the splitter
+        self.preview_label.setMinimumSize(640, 360)
         self.preview_label.setStyleSheet("background-color: black; color: white;")
         layout.addWidget(self.preview_label, stretch=1)
         
@@ -1347,19 +1062,16 @@ class SoundReactiveGUI(QMainWindow):
     
     def load_logo(self):
         """Load application logo"""
-        logo_path = resource_path("SoundReactive_Logo_Transparent_BG.png")
+        logo_path = "SoundReactive_Logo_Transparent_BG.png"
         if os.path.exists(logo_path):
             try:
                 pixmap = QPixmap(logo_path)
                 if not pixmap.isNull():
-                    # Scale to match header logo label size
-                    scaled_pixmap = pixmap.scaled(80, 48, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                    # Scale to larger size (400x160 as set in header)
+                    scaled_pixmap = pixmap.scaled(400, 160, Qt.KeepAspectRatio, Qt.SmoothTransformation)
                     self.logo_label.setPixmap(scaled_pixmap)
-                    self.logo_label.setText("")  # clear placeholder text
             except Exception as e:
                 print(f"Could not load logo: {e}")
-        else:
-            print(f"Logo not found at: {logo_path}")
     
     def show_about_dialog(self):
         """Show About dialog with app information"""
@@ -1655,22 +1367,6 @@ class SoundReactiveGUI(QMainWindow):
                 scan_lines_intensity = np.clip(scan_lines_intensity, 0.0, 1.0)
                 scan_lines_intensity = self.apply_temporal_smoothing('scan_lines', scan_lines_intensity)
         
-        # ── Natural motion for this preview frame ──────────────────────────────
-        nm_params = self.get_natural_motion_params()
-        total_frames = max(self.total_frames, 1)
-        nm = VideoProcessor.compute_natural_motion(
-            frame_idx=self.current_frame_idx,
-            total_frames=total_frames,
-            fps=self.fps,
-            audio_drift_bass=bass,
-            audio_drift_treble=treble,
-            audio_drift_smoothed_x=self._nm_ad_smooth_x,
-            audio_drift_smoothed_y=self._nm_ad_smooth_y,
-            **nm_params,
-        )
-        self._nm_ad_smooth_x = nm['audio_drift_smoothed_x']
-        self._nm_ad_smooth_y = nm['audio_drift_smoothed_y']
-
         return {
             'zoom': zoom, 'rotation': rotation, 'hue_shift': hue_shift,
             'saturation': saturation, 'brightness': brightness,
@@ -1682,12 +1378,7 @@ class SoundReactiveGUI(QMainWindow):
             'posterization_intensity': posterization_intensity,
             'edge_detection_intensity': edge_detection_intensity,
             'data_corruption_intensity': data_corruption_intensity,
-            'scan_lines_intensity': scan_lines_intensity,
-            # Natural motion offsets
-            'natural_zoom_offset': nm['zoom_offset'],
-            'natural_pan_x': nm['pan_x'],
-            'natural_pan_y': nm['pan_y'],
-            'natural_rotation_offset': nm['rotation_offset'],
+            'scan_lines_intensity': scan_lines_intensity
         }
     
     def apply_effects_to_frame(self, frame):
@@ -1713,8 +1404,8 @@ class SoundReactiveGUI(QMainWindow):
             saturation=params['saturation'],
             brightness=params['brightness'],
             blur_intensity=params['blur_intensity'],
-            glitch_intensity=0.0,
-            artifacts_intensity=0.0,
+            glitch_intensity=0.0,  # Not in UI yet
+            artifacts_intensity=0.0,  # Not in UI yet
             pixel_sort_intensity=params['pixel_sort_intensity'],
             kaleidoscope_intensity=params['kaleidoscope_intensity'],
             wave_distortion_intensity=params['wave_distortion_intensity'],
@@ -1725,11 +1416,7 @@ class SoundReactiveGUI(QMainWindow):
             scan_lines_intensity=params['scan_lines_intensity'],
             effect_mode="direct",
             blend_mode=blend_mode,
-            layer_opacity=layer_opacity,
-            natural_zoom_offset=params.get('natural_zoom_offset', 0.0),
-            natural_pan_x=params.get('natural_pan_x', 0.0),
-            natural_pan_y=params.get('natural_pan_y', 0.0),
-            natural_rotation_offset=params.get('natural_rotation_offset', 0.0),
+            layer_opacity=layer_opacity
         )
     
     def update_preview(self):
@@ -2058,7 +1745,13 @@ class SoundReactiveGUI(QMainWindow):
             
             with tempfile.TemporaryDirectory() as tmpdir:
                 audio_path = os.path.join(tmpdir, 'audio.wav')
-                cmd = ['ffmpeg', '-i', self.video_path, '-q:a', '9', '-y', audio_path]
+                try:
+                    ffmpeg_bin = get_ffmpeg_path()
+                except FileNotFoundError as exc:
+                    self.processing_signals.progress_update.emit(0, "FFmpeg not found")
+                    QTimer.singleShot(0, lambda msg=str(exc): QMessageBox.critical(self, "FFmpeg Not Found", msg))
+                    return
+                cmd = [ffmpeg_bin, '-i', self.video_path, '-q:a', '9', '-y', audio_path]
                 result = subprocess.run(cmd, capture_output=True, text=True)
                 
                 if result.returncode != 0:
@@ -2409,11 +2102,6 @@ class SoundReactiveGUI(QMainWindow):
             snare_hit_times = np.array([])
         
         # Process each frame
-        # Natural motion persistent state
-        _vp_nm_ad_smooth_x = 0.0
-        _vp_nm_ad_smooth_y = 0.0
-        _vp_nm_params = self.get_natural_motion_params()
-
         frame_idx = 0
         while True:
             ret, frame = cap.read()
@@ -2544,20 +2232,6 @@ class SoundReactiveGUI(QMainWindow):
                     scan_lines_intensity = np.clip(scan_lines_intensity, 0.0, 1.0)
                     scan_lines_intensity = self.apply_temporal_smoothing('scan_lines', scan_lines_intensity)
             
-            # Natural motion for this frame
-            _vp_nm = VideoProcessor.compute_natural_motion(
-                frame_idx=frame_idx,
-                total_frames=total_frames,
-                fps=fps,
-                audio_drift_bass=bass_val,
-                audio_drift_treble=treble_val,
-                audio_drift_smoothed_x=_vp_nm_ad_smooth_x,
-                audio_drift_smoothed_y=_vp_nm_ad_smooth_y,
-                **_vp_nm_params,
-            )
-            _vp_nm_ad_smooth_x = _vp_nm['audio_drift_smoothed_x']
-            _vp_nm_ad_smooth_y = _vp_nm['audio_drift_smoothed_y']
-
             # Get blend mode and opacity
             blend_mode = self.blend_mode_combo.currentText().lower()
             layer_opacity = self.opacity_slider.value() / 100.0
@@ -2574,8 +2248,8 @@ class SoundReactiveGUI(QMainWindow):
                 saturation=saturation,
                 brightness=brightness,
                 blur_intensity=blur_intensity,
-                glitch_intensity=0.0,
-                artifacts_intensity=0.0,
+                glitch_intensity=0.0,  # Not in UI
+                artifacts_intensity=0.0,  # Not in UI
                 pixel_sort_intensity=pixel_sort_intensity,
                 kaleidoscope_intensity=kaleidoscope_intensity,
                 wave_distortion_intensity=wave_distortion_intensity,
@@ -2586,11 +2260,7 @@ class SoundReactiveGUI(QMainWindow):
                 scan_lines_intensity=scan_lines_intensity,
                 effect_mode="direct",
                 blend_mode=blend_mode,
-                layer_opacity=layer_opacity,
-                natural_zoom_offset=_vp_nm['zoom_offset'],
-                natural_pan_x=_vp_nm['pan_x'],
-                natural_pan_y=_vp_nm['pan_y'],
-                natural_rotation_offset=_vp_nm['rotation_offset'],
+                layer_opacity=layer_opacity
             )
             
             # Write frame
@@ -2648,7 +2318,13 @@ class SoundReactiveGUI(QMainWindow):
                     # Extract audio from original video
                     audio_path = os.path.join(tmpdir, 'extracted_audio.wav')
                     self.processing_signals.progress_update.emit(10, self._get_random_message('audio_extraction'))
-                    cmd = ['ffmpeg', '-i', self.video_path, '-q:a', '9', '-y', audio_path]
+                    try:
+                        ffmpeg_bin = get_ffmpeg_path()
+                    except FileNotFoundError as exc:
+                        self.processing_signals.progress_update.emit(0, "FFmpeg not found")
+                        QTimer.singleShot(0, lambda msg=str(exc): QMessageBox.critical(self, "FFmpeg Not Found", msg))
+                        return
+                    cmd = [ffmpeg_bin, '-i', self.video_path, '-q:a', '9', '-y', audio_path]
                     result = subprocess.run(cmd, capture_output=True, text=True)
                     
                     if result.returncode != 0:
@@ -2973,7 +2649,8 @@ class SoundReactiveGUI(QMainWindow):
     
     def _merge_audio_video(self, video_path, audio_path, output_path):
         """Merge audio and video using ffmpeg"""
-        cmd = ['ffmpeg', '-i', video_path, '-i', audio_path, '-c:v', 'copy', '-c:a', 'aac', '-shortest', '-y', output_path]
+        ffmpeg_bin = get_ffmpeg_path()
+        cmd = [ffmpeg_bin, '-i', video_path, '-i', audio_path, '-c:v', 'copy', '-c:a', 'aac', '-shortest', '-y', output_path]
         subprocess.run(cmd, capture_output=True)
     
     def _merge_audio_video_looped(self, video_path, audio_path, output_path, video_duration):
@@ -2992,11 +2669,13 @@ class SoundReactiveGUI(QMainWindow):
             
             print(f"Merging audio: video={video_duration:.2f}s, audio={audio_duration:.2f}s")
             
+            ffmpeg_bin = get_ffmpeg_path()
+
             if video_duration <= audio_duration:
                 # Video is shorter or equal - use shortest
                 # Re-encode video to ensure compatibility (some codecs don't support audio merging with -c:v copy)
                 cmd = [
-                    'ffmpeg', '-i', video_path, '-i', audio_path,
+                    ffmpeg_bin, '-i', video_path, '-i', audio_path,
                     '-c:v', 'libx264', '-preset', 'fast', '-crf', '23',
                     '-c:a', 'aac', '-b:a', '192k',
                     '-map', '0:v:0', '-map', '1:a:0',
@@ -3019,7 +2698,7 @@ class SoundReactiveGUI(QMainWindow):
                 # Create looped audio using ffmpeg
                 # Use stream_loop to loop the audio
                 cmd_loop = [
-                    'ffmpeg', '-stream_loop', str(num_loops - 1),
+                    ffmpeg_bin, '-stream_loop', str(num_loops - 1),
                     '-i', audio_path,
                     '-t', str(video_duration),
                     '-c:a', 'pcm_s16le',  # Ensure WAV format
@@ -3037,7 +2716,7 @@ class SoundReactiveGUI(QMainWindow):
                 # Merge with video
                 # Re-encode video to ensure compatibility (some codecs don't support audio merging with -c:v copy)
                 cmd = [
-                    'ffmpeg', '-i', video_path, '-i', looped_audio_path,
+                    ffmpeg_bin, '-i', video_path, '-i', looped_audio_path,
                     '-c:v', 'libx264', '-preset', 'fast', '-crf', '23',
                     '-c:a', 'aac', '-b:a', '192k',
                     '-map', '0:v:0', '-map', '1:a:0',
@@ -3067,70 +2746,14 @@ class SoundReactiveGUI(QMainWindow):
             raise
 
 
-def _set_macos_app_name(name: str) -> None:
-    """
-    On macOS, the Dock and menu-bar show the *process* name, which defaults
-    to 'Python' when running a script directly.  Two complementary fixes:
-
-    1. Rename the process via AppKit's NSBundle (sets CFBundleName so the
-       menu bar and Dock label both update immediately).
-    2. Rename the low-level process name via ctypes / libc so that tools
-       like Activity Monitor also show the correct name.
-    """
-    import platform
-    if platform.system() != "Darwin":
-        return
-    try:
-        # Method 1: AppKit / Foundation (most reliable for Dock + menu bar)
-        from Foundation import NSBundle  # type: ignore
-        info = NSBundle.mainBundle().infoDictionary()
-        info["CFBundleName"] = name
-        info["CFBundleDisplayName"] = name
-    except Exception:
-        pass
-    try:
-        # Method 2: ctypes rename via libproc / libc (Activity Monitor)
-        import ctypes
-        import ctypes.util
-        libc_name = ctypes.util.find_library("c")
-        if libc_name:
-            libc = ctypes.CDLL(libc_name)
-            # setprogname is available on macOS
-            libc.setprogname.restype = None
-            libc.setprogname.argtypes = [ctypes.c_char_p]
-            libc.setprogname(name.encode())
-    except Exception:
-        pass
-
-
 def main():
     """Main entry point"""
-    _set_macos_app_name("SoundReactive")
     app = QApplication(sys.argv)
-    app.setApplicationName("SoundReactive")
-    app.setApplicationDisplayName("SoundReactive")
-    app.setOrganizationName("SoundReactive")
-
-    # Show animated splash screen while the main window initialises
-    splash = SoundReactiveSplash(duration_ms=2800)
-    screen_geo = app.primaryScreen().availableGeometry()
-    splash.move(
-        screen_geo.center().x() - splash.width() // 2,
-        screen_geo.center().y() - splash.height() // 2,
-    )
-    splash.show()
-    app.processEvents()
-
+    
     print("Creating PyQt5 GUI...")
     window = SoundReactiveGUI()
-
-    # Delay main window show until splash has had time to display
-    def _show_main():
-        window.show()
-        window.raise_()
-
-    QTimer.singleShot(2800, _show_main)
-
+    window.show()
+    
     print("Starting event loop...")
     sys.exit(app.exec_())
 

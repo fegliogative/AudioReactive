@@ -18,11 +18,66 @@ Usage:
 import argparse
 import sys
 import os
+import shutil
 from pathlib import Path
 from audio_analysis import AudioAnalyzer
 from video_processor import VideoProcessor
 from image_to_video import ImageToVideoProcessor
 import tempfile
+
+
+def get_ffmpeg_path() -> str:
+    """
+    Resolve the absolute path to the ffmpeg executable.
+
+    Resolution order:
+    1. ``FFMPEG_PATH`` environment variable (user override).
+    2. ``shutil.which('ffmpeg')`` — honours the current ``PATH``.
+    3. Common macOS Homebrew installation prefixes (Apple Silicon and Intel).
+    4. ``imageio_ffmpeg`` bundled binary (installed via ``pip install imageio-ffmpeg``).
+
+    Raises
+    ------
+    FileNotFoundError
+        When ffmpeg cannot be located through any of the above strategies.
+    """
+    # 1. Explicit environment override
+    env_path = os.environ.get("FFMPEG_PATH")
+    if env_path and os.path.isfile(env_path):
+        return env_path
+
+    # 2. Standard PATH lookup
+    which_path = shutil.which("ffmpeg")
+    if which_path:
+        return which_path
+
+    # 3. Well-known macOS Homebrew locations (GUI apps often run with a stripped PATH)
+    homebrew_candidates = [
+        "/opt/homebrew/bin/ffmpeg",   # Apple Silicon (M1/M2/M3/M4)
+        "/usr/local/bin/ffmpeg",       # Intel Homebrew
+        "/usr/bin/ffmpeg",             # System package (Linux / some macOS)
+    ]
+    for candidate in homebrew_candidates:
+        if os.path.isfile(candidate):
+            return candidate
+
+    # 4. imageio_ffmpeg bundled binary
+    try:
+        import imageio_ffmpeg  # type: ignore
+        bundled = imageio_ffmpeg.get_ffmpeg_exe()
+        if bundled and os.path.isfile(bundled):
+            return bundled
+    except Exception:
+        pass
+
+    raise FileNotFoundError(
+        "ffmpeg could not be found.\n\n"
+        "Please install it and ensure it is on your PATH:\n"
+        "  macOS:  brew install ffmpeg\n"
+        "  Linux:  sudo apt install ffmpeg\n\n"
+        "Alternatively, set the FFMPEG_PATH environment variable "
+        "to the full path of the ffmpeg binary."
+    )
 
 
 def extract_audio(video_path: str, audio_path: str) -> None:
@@ -31,7 +86,7 @@ def extract_audio(video_path: str, audio_path: str) -> None:
     
     print(f"Extracting audio from video...")
     cmd = [
-        'ffmpeg', '-i', video_path, '-q:a', '9', '-n', audio_path
+        get_ffmpeg_path(), '-i', video_path, '-q:a', '9', '-n', audio_path
     ]
     
     result = subprocess.run(cmd, capture_output=True, text=True)
@@ -46,7 +101,7 @@ def merge_audio_video(video_path: str, audio_path: str, output_path: str) -> Non
     
     print(f"Merging video with original audio...")
     cmd = [
-        'ffmpeg', '-i', video_path, '-i', audio_path,
+        get_ffmpeg_path(), '-i', video_path, '-i', audio_path,
         '-c:v', 'copy', '-c:a', 'aac', '-map', '0:v:0', '-map', '1:a:0',
         '-y', output_path
     ]
